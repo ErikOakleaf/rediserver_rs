@@ -86,8 +86,16 @@ impl Socket {
         read_socket(self.fd, buffer)
     }
 
+    pub fn read_full(&self, buffer: &mut [u8]) -> io::Result<()> {
+        read_full_socket(self.fd, buffer)
+    }
+
     pub fn write(&self, buffer: &[u8]) -> io::Result<usize> {
         write_socket(self.fd, buffer)
+    }
+
+    pub fn write_full(&self, buffer: &[u8]) -> io::Result<()> {
+        write_full_socket(self.fd, buffer)
     }
 }
 
@@ -116,6 +124,33 @@ pub fn read_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<usize> {
     }
 }
 
+pub fn read_full_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<()> {
+    let buffer_length = buffer.len();
+    let mut total = 0;
+    while total < buffer_length {
+        let n = unsafe {
+            read(
+                fd,
+                buffer[total..].as_mut_ptr() as *mut c_void,
+                buffer_length - total,
+            )
+        };
+
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        } else if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            ));
+        }
+
+        total += n as usize;
+    }
+
+    Ok(())
+}
+
 pub fn write_socket(fd: c_int, buffer: &[u8]) -> io::Result<usize> {
     let n = unsafe { write(fd, buffer.as_ptr() as *const c_void, buffer.len()) };
     if n < 0 {
@@ -123,6 +158,22 @@ pub fn write_socket(fd: c_int, buffer: &[u8]) -> io::Result<usize> {
     } else {
         Ok(n as usize)
     }
+}
+
+pub fn write_full_socket(fd: c_int, buffer: &[u8]) -> io::Result<()> {
+    let buffer_length = buffer.len();
+    let mut total = 0;
+    while total < buffer_length {
+        let n = unsafe { write(fd, buffer[total..].as_ptr() as *const c_void, buffer_length - total) };
+
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        total += n as usize;
+    }
+
+    Ok(())
 }
 
 fn set_socket_options<T>(fd: c_int, level: i32, optname: i32, value: &T) -> io::Result<()> {
