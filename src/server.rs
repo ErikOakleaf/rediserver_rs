@@ -1,8 +1,9 @@
 use redis::{
-    error::{ProtocolError, RedisError, MAX_MESSAGE_SIZE},
-    net::{make_ipv4_address, Socket},
+    error::{MAX_MESSAGE_SIZE, ProtocolError, RedisError},
+    net::{Socket, make_ipv4_address},
 };
 
+const BUFFER_SIZE: usize = 4 + MAX_MESSAGE_SIZE;
 
 fn main() {
     let soc = Socket::new_tcp_();
@@ -20,17 +21,97 @@ fn main() {
             Err(_) => continue,
         };
 
-        loop {
-            let result = one_request(&connection_socket);
-            if let Err(_) = result {
-                break;
-            }
+        process_requests(&connection_socket).unwrap();
+
+        // loop {
+        //     let result = one_request(&connection_socket);
+        //     if let Err(_) = result {
+        //         break;
+        //     }
+        // }
+    }
+}
+
+struct ReadState {
+    buffer: [u8; BUFFER_SIZE],
+    length: usize,
+    position: usize,
+    wanted_length: Option<usize>,
+}
+
+impl ReadState {
+    fn new() -> Self {
+        ReadState {
+            buffer: [0u8; BUFFER_SIZE],
+            length: 0,
+            position: 0,
+            wanted_length: None,
         }
     }
 }
 
+fn process_requests(soc: &Socket) -> Result<(), RedisError> {
+    let mut read_state = ReadState::new();
+
+    loop {
+        let read_result = fill_buffer(soc, &mut read_state);
+        if let Err(_) = read_result {
+            break;
+        }
+
+        try_process_messages(soc, &mut read_state)?;
+    }
+
+    Ok(())
+}
+
+#[inline(always)]
+fn fill_buffer(soc: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
+    let read_result = soc.read(&mut state.buffer[state.length..])?;
+    state.length += read_result;
+    Ok(())
+}
+
+#[inline]
+fn try_process_messages(soc: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
+    loop {
+        if state.length - state.position < 4 {
+            return Ok(());
+        }
+
+        let length = u32_from_be_bytes(&state.buffer[state.position..state.position + 4]) as usize;
+
+        let leftover = state.length - state.position;
+        if leftover < length {
+            state.buffer.copy_within(state.position..state.length, 0);
+            state.length = leftover;
+            state.position = 0;
+            return Ok(());
+        }
+
+        handle_message(&state.buffer[state.position + 4..state.position + 4 + length], soc);
+        state.position += length + 4;
+    }
+}
+
+fn handle_message(buffer: &[u8], soc: &Socket) {
+    let s = std::str::from_utf8(buffer).unwrap().to_string();
+
+    println!("client says {}", s);
+
+    let response = b"world";
+    let response_length = response.len();
+
+    let mut write_buffer = [0u8; 9];
+
+    write_buffer[..4].copy_from_slice(&(response_length as u32).to_be_bytes());
+    write_buffer[4..4 + response.len()].copy_from_slice(response);
+
+    soc.write_full(&write_buffer).unwrap();
+}
+
 fn one_request(soc: &Socket) -> Result<(), RedisError> {
-    let mut read_buffer: [u8; 4 + MAX_MESSAGE_SIZE + 1] = [0; 4 + MAX_MESSAGE_SIZE + 1];
+    let mut read_buffer: [u8; 4 + MAX_MESSAGE_SIZE] = [0; 4 + MAX_MESSAGE_SIZE];
 
     // read length
     soc.read_full(&mut read_buffer[..4])?;
