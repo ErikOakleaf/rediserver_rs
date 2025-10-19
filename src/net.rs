@@ -115,7 +115,7 @@ impl Drop for Socket {
     }
 }
 
-pub fn read_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<usize> {
+fn read_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<usize> {
     let n = unsafe { read(fd, buffer.as_mut_ptr() as *mut c_void, buffer.len()) };
     if n < 0 {
         Err(io::Error::last_os_error())
@@ -124,7 +124,7 @@ pub fn read_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<usize> {
     }
 }
 
-pub fn read_full_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<()> {
+fn read_full_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<()> {
     let buffer_length = buffer.len();
     let mut total = 0;
     while total < buffer_length {
@@ -151,7 +151,7 @@ pub fn read_full_socket(fd: c_int, buffer: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
-pub fn write_socket(fd: c_int, buffer: &[u8]) -> io::Result<usize> {
+fn write_socket(fd: c_int, buffer: &[u8]) -> io::Result<usize> {
     let n = unsafe { write(fd, buffer.as_ptr() as *const c_void, buffer.len()) };
     if n < 0 {
         Err(io::Error::last_os_error())
@@ -160,7 +160,7 @@ pub fn write_socket(fd: c_int, buffer: &[u8]) -> io::Result<usize> {
     }
 }
 
-pub fn write_full_socket(fd: c_int, buffer: &[u8]) -> io::Result<()> {
+fn write_full_socket(fd: c_int, buffer: &[u8]) -> io::Result<()> {
     let buffer_length = buffer.len();
     let mut total = 0;
     while total < buffer_length {
