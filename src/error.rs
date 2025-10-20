@@ -6,6 +6,7 @@ pub const MAX_MESSAGE_SIZE: usize = 4096;
 pub enum RedisError {
     Io(io::Error),
     ProtocolError(ProtocolError),
+    ConnectionClosed,
 }
 
 impl From<io::Error> for RedisError {
