@@ -1,6 +1,5 @@
 use libc::{
-    AF_INET, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, accept, bind, close, connect, htonl,
-    htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in, socklen_t, write,
+    accept, bind, close, connect, fcntl, htonl, htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in, socklen_t, write, AF_INET, F_GETFL, F_SETFL, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_REUSEADDR
 };
 use libc::{c_int, socket};
 use std::ffi::c_void;
@@ -19,6 +18,21 @@ impl Socket {
     pub fn set_reuseaddr(&self) -> io::Result<()> {
         let val: i32 = 1;
         set_socket_options(self.fd, SOL_SOCKET, SO_REUSEADDR, &val)
+    }
+
+    pub fn set_non_blocking(&self) -> io::Result<()> {
+        let mut flags = unsafe {fcntl(self.fd, F_GETFL, 0)};
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        flags |= O_NONBLOCK;
+
+        if unsafe {fcntl(self.fd, F_SETFL, flags)} == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
     }
 
     pub fn bind(&self, address: &sockaddr_in) -> io::Result<()> {

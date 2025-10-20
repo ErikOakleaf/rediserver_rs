@@ -4,24 +4,23 @@ use redis::{
 };
 
 const BUFFER_SIZE: usize = 4 + MAX_MESSAGE_SIZE;
+const MAX_CONNECTIONS: usize = 1000;
 
-fn main() {
-    let soc = Socket::new_tcp_();
-    soc.set_reuseaddr().unwrap();
+struct Connection {
+    socket: Socket,
+    state: ConnectionState,
+    read_state: ReadState,
+    write_state: WriteState,
+}
 
-    let address = make_ipv4_address(0, 1234);
-
-    soc.bind(&address).unwrap();
-
-    soc.listen().unwrap();
-
-    loop {
-        let (connection_socket, _) = match soc.accept() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-
-        process_requests(&connection_socket).unwrap();
+impl Connection {
+    fn new(socket: Socket) -> Self {
+        Connection {
+            socket: socket,
+            state: ConnectionState::Request,
+            read_state: ReadState::new(),
+            write_state: WriteState::new(),
+        }
     }
 }
 
@@ -43,24 +42,69 @@ impl ReadState {
     }
 }
 
-fn process_requests(soc: &Socket) -> Result<(), RedisError> {
-    let mut read_state = ReadState::new();
+struct WriteState {
+    buffer: [u8; BUFFER_SIZE],
+    size: usize,
+    bytes_sent: usize,
+}
+
+impl WriteState {
+    fn new() -> Self {
+        WriteState {
+            buffer: [0u8; BUFFER_SIZE],
+            size: 0,
+            bytes_sent: 0,
+        }
+    }
+}
+
+pub enum ConnectionState {
+    Request,
+    Respond,
+    End,
+}
+
+fn main() {
+    let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
+    connections.resize_with(MAX_CONNECTIONS, || None);
+
+    let soc = Socket::new_tcp_();
+    soc.set_reuseaddr().unwrap();
+
+    let address = make_ipv4_address(0, 1234);
+
+    soc.bind(&address).unwrap();
+
+    soc.listen().unwrap();
 
     loop {
-        let read_result = fill_buffer(soc, &mut read_state);
+        let (connection_socket, _) = match soc.accept() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        let mut connection = Connection::new(connection_socket);
+
+        process_requests(&mut connection).unwrap();
+    }
+}
+
+fn process_requests(connection: &mut Connection) -> Result<(), RedisError> {
+    loop {
+        let read_result = fill_buffer(&connection.socket, &mut connection.read_state);
         if let Err(_) = read_result {
             break;
         }
 
-        try_process_messages(soc, &mut read_state);
+        try_process_messages(connection);
     }
 
     Ok(())
 }
 
 #[inline(always)]
-fn fill_buffer(soc: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
-    let read_result = soc.read(&mut state.buffer[state.bytes_filled..])?;
+fn fill_buffer(socket: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
+    let read_result = socket.read(&mut state.buffer[state.bytes_filled..])?;
 
     if read_result == 0 {
         return Err(RedisError::ConnectionClosed);
@@ -71,14 +115,16 @@ fn fill_buffer(soc: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
 }
 
 #[inline]
-fn try_process_messages(soc: &Socket, state: &mut ReadState) {
+fn try_process_messages(connection: &mut Connection) {
     loop {
-        let message = try_extract_message(state);
+        let maybe_message = { try_extract_message(&mut connection.read_state) };
 
-        match message {
+        let message = match maybe_message {
             None => return,
-            Some(message) => handle_message(message, soc),
-        }
+            Some(message) => message,
+        };
+
+        handle_message(message, &connection.socket, &mut connection.write_state);
     }
 }
 
@@ -127,7 +173,7 @@ fn shift_buffer_if_needed(state: &mut ReadState) {
     }
 }
 
-fn handle_message(buffer: &[u8], soc: &Socket) {
+fn handle_message(buffer: &[u8], socket: &Socket, write_state: &mut WriteState) {
     let s = std::str::from_utf8(buffer).unwrap().to_string();
 
     println!("client says {}", s);
@@ -135,12 +181,10 @@ fn handle_message(buffer: &[u8], soc: &Socket) {
     let response = b"world";
     let response_length = response.len();
 
-    let mut write_buffer = [0u8; 9];
+    write_state.buffer[..4].copy_from_slice(&(response_length as u32).to_be_bytes());
+    write_state.buffer[4..4 + response.len()].copy_from_slice(response);
 
-    write_buffer[..4].copy_from_slice(&(response_length as u32).to_be_bytes());
-    write_buffer[4..4 + response.len()].copy_from_slice(response);
-
-    soc.write_full(&write_buffer).unwrap();
+    socket.write_full(&write_state.buffer[..9]).unwrap();
 }
 
 // Helpers
