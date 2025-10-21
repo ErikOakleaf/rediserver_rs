@@ -1,16 +1,19 @@
 use libc::{
-    accept, bind, close, connect, fcntl, htonl, htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in, socklen_t, write, AF_INET, F_GETFL, F_SETFL, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SOMAXCONN, SO_REUSEADDR
+    AF_INET, EPOLL_CTL_ADD, F_GETFL, F_SETFL, O_NONBLOCK, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET,
+    SOMAXCONN, accept, bind, close, connect, epoll_create1, epoll_ctl, epoll_event, epoll_wait,
+    fcntl, htonl, htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in, socklen_t,
+    write,
 };
 use libc::{c_int, socket};
 use std::ffi::c_void;
 use std::{io, mem};
 
 pub struct Socket {
-    fd: c_int,
+    pub fd: c_int,
 }
 
 impl Socket {
-    pub fn new_tcp_() -> Self {
+    pub fn new_tcp() -> Self {
         let fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
         Socket { fd: fd }
     }
@@ -21,14 +24,14 @@ impl Socket {
     }
 
     pub fn set_non_blocking(&self) -> io::Result<()> {
-        let mut flags = unsafe {fcntl(self.fd, F_GETFL, 0)};
+        let mut flags = unsafe { fcntl(self.fd, F_GETFL, 0) };
         if flags == -1 {
             return Err(io::Error::last_os_error());
         }
 
         flags |= O_NONBLOCK;
 
-        if unsafe {fcntl(self.fd, F_SETFL, flags)} == -1 {
+        if unsafe { fcntl(self.fd, F_SETFL, flags) } == -1 {
             return Err(io::Error::last_os_error());
         }
 
@@ -178,7 +181,13 @@ fn write_full_socket(fd: c_int, buffer: &[u8]) -> io::Result<()> {
     let buffer_length = buffer.len();
     let mut total = 0;
     while total < buffer_length {
-        let n = unsafe { write(fd, buffer[total..].as_ptr() as *const c_void, buffer_length - total) };
+        let n = unsafe {
+            write(
+                fd,
+                buffer[total..].as_ptr() as *const c_void,
+                buffer_length - total,
+            )
+        };
 
         if n < 0 {
             return Err(io::Error::last_os_error());
@@ -206,6 +215,51 @@ fn set_socket_options<T>(fd: c_int, level: i32, optname: i32, value: &T) -> io::
         Ok(())
     }
 }
+
+pub struct Epoll {
+    fd: c_int,
+}
+
+impl Epoll {
+    pub fn new() -> Self {
+        let fd = unsafe { epoll_create1(0) };
+        Epoll { fd: fd }
+    }
+
+    pub fn add(&self, fd: c_int, events: u32) -> io::Result<()> {
+        let mut event = epoll_event {
+            events: events,
+            u64: fd as u64,
+        };
+
+        let return_value = unsafe { epoll_ctl(self.fd, EPOLL_CTL_ADD, fd, &mut event) };
+
+        if return_value == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn wait(&self, events: &mut [epoll_event], timeout_ms: i32) -> io::Result<usize> {
+        let amount_ready = unsafe {
+            epoll_wait(
+                self.fd,
+                events.as_mut_ptr(),
+                events.len() as i32,
+                timeout_ms,
+            )
+        };
+
+        if amount_ready == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(amount_ready as usize)
+        }
+    }
+}
+
+// helpers
 
 pub fn make_ipv4_address(ip: u32, port: u16) -> sockaddr_in {
     sockaddr_in {

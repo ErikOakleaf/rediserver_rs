@@ -5,7 +5,7 @@ use redis::{
 };
 
 fn main() -> Result<(), RedisError> {
-    let soc = Socket::new_tcp_();
+    let soc = Socket::new_tcp();
 
     let address = make_ipv4_address(INADDR_LOOPBACK, 1234);
     soc.connect(&address).unwrap();

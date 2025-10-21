@@ -1,6 +1,9 @@
+use std::io;
+
+use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
     error::{MAX_MESSAGE_SIZE, ProtocolError, RedisError},
-    net::{Socket, make_ipv4_address},
+    net::{Epoll, Socket, make_ipv4_address},
 };
 
 const BUFFER_SIZE: usize = 4 + MAX_MESSAGE_SIZE;
@@ -64,41 +67,87 @@ pub enum ConnectionState {
     End,
 }
 
-fn main() {
+fn main() -> Result<(), RedisError> {
     let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
     connections.resize_with(MAX_CONNECTIONS, || None);
 
-    let soc = Socket::new_tcp_();
-    soc.set_reuseaddr().unwrap();
+    let mut events: Vec<epoll_event> = Vec::with_capacity(MAX_CONNECTIONS);
+    events.resize_with(MAX_CONNECTIONS, || epoll_event { events: 0, u64: 0 });
+
+    // create listening socket
+    let listen_socket = Socket::new_tcp();
+    listen_socket.set_reuseaddr()?;
+    listen_socket.set_non_blocking()?;
 
     let address = make_ipv4_address(0, 1234);
 
-    soc.bind(&address).unwrap();
+    listen_socket.bind(&address)?;
 
-    soc.listen().unwrap();
+    listen_socket.listen()?;
+
+    // create epoll and add listening socket
+    let epoll = Epoll::new();
+    epoll.add(listen_socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
 
     loop {
-        let (connection_socket, _) = match soc.accept() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
+        let amount_events = epoll.wait(&mut events, -1)?;
 
-        let mut connection = Connection::new(connection_socket);
+        for i in 0..amount_events {
+            let event = events[i];
+            let fd = event.u64 as c_int;
+            let flags = event.events;
 
-        process_requests(&mut connection).unwrap();
+            if fd == listen_socket.fd && (flags & EPOLLIN as u32) != 0 {
+                accept_new_connections(&listen_socket, &epoll, &mut connections)?;
+            } else if (flags & EPOLLIN as u32) != 0 {
+                match &mut connections[fd as usize] {
+                    Some(connection) => {
+                        match fill_buffer(&connection.socket, &mut connection.read_state) {
+                            Ok(_) => loop {
+                                let maybe_message = try_extract_message(&mut connection.read_state);
+
+                                match maybe_message {
+                                    Some(message) => handle_message(
+                                        message,
+                                        &connection.socket,
+                                        &mut connection.write_state,
+                                    ),
+                                    None => break,
+                                }
+                            },
+                            Err(_) => {
+                                continue;
+                            }
+                        }
+                    }
+                    None => return Err(RedisError::ConnectionClosed),
+                }
+            }
+        }
     }
 }
 
-fn process_requests(connection: &mut Connection) -> Result<(), RedisError> {
+fn accept_new_connections(
+    listen_socket: &Socket,
+    epoll: &Epoll,
+    connections: &mut Vec<Option<Connection>>,
+) -> Result<(), RedisError> {
     loop {
-        let read_result = fill_buffer(&connection.socket, &mut connection.read_state);
-        if let Err(_) = read_result {
-            break;
+        match listen_socket.accept() {
+            Ok((client_socket, _address)) => {
+                let client_fd = client_socket.fd;
+                client_socket.set_non_blocking()?;
+                epoll.add(client_fd, (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
+                let connection = Connection::new(client_socket);
+                connections[client_fd as usize] = Some(connection);
+            }
+
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                break;
+            }
+            Err(e) => return Err(e.into()),
         }
-
-        try_process_messages(connection);
     }
-
     Ok(())
 }
 
@@ -141,7 +190,7 @@ fn try_extract_message(state: &mut ReadState) -> Option<&[u8]> {
     }
 
     if state.bytes_filled - state.position < 4 {
-        shift_buffer_if_needed(state);
+        reset_buffer_if_needed(state);
         return None;
     }
 
@@ -166,7 +215,7 @@ fn try_extract_message(state: &mut ReadState) -> Option<&[u8]> {
 }
 
 #[inline(always)]
-fn shift_buffer_if_needed(state: &mut ReadState) {
+fn reset_buffer_if_needed(state: &mut ReadState) {
     if state.position > 0 && state.position == state.bytes_filled {
         state.bytes_filled = 0;
         state.position = 0;
