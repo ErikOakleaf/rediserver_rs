@@ -1,8 +1,8 @@
 use libc::{
-    AF_INET, EPOLL_CTL_ADD, F_GETFL, F_SETFL, O_NONBLOCK, SO_REUSEADDR, SOCK_STREAM, SOL_SOCKET,
-    SOMAXCONN, accept, bind, close, connect, epoll_create1, epoll_ctl, epoll_event, epoll_wait,
-    fcntl, htonl, htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in, socklen_t,
-    write,
+    AF_INET, EPOLL_CTL_ADD, EPOLL_CTL_MOD, F_GETFL, F_SETFL, O_NONBLOCK, SO_REUSEADDR, SOCK_STREAM,
+    SOL_SOCKET, SOMAXCONN, accept, bind, close, connect, epoll_create1, epoll_ctl, epoll_event,
+    epoll_wait, fcntl, htonl, htons, in_addr, listen, read, setsockopt, sockaddr, sockaddr_in,
+    socklen_t, write,
 };
 use libc::{c_int, socket};
 use std::ffi::c_void;
@@ -233,6 +233,21 @@ impl Epoll {
         };
 
         let return_value = unsafe { epoll_ctl(self.fd, EPOLL_CTL_ADD, fd, &mut event) };
+
+        if return_value == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn modify(&self, fd: c_int, events: u32) -> io::Result<()> {
+        let mut event = epoll_event {
+            events: events,
+            u64: fd as u64,
+        };
+
+        let return_value = unsafe { epoll_ctl(self.fd, EPOLL_CTL_MOD, fd, &mut event) };
 
         if return_value == -1 {
             Err(io::Error::last_os_error())

@@ -2,129 +2,165 @@ use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
+    connection::{Connection, ConnectionState, ReadState, WriteState},
     error::{MAX_MESSAGE_SIZE, ProtocolError, RedisError},
     net::{Epoll, Socket, make_ipv4_address},
 };
 
-const BUFFER_SIZE: usize = 4 + MAX_MESSAGE_SIZE;
+const HEADER_SIZE: usize = 4;
+const BUFFER_SIZE: usize = HEADER_SIZE + MAX_MESSAGE_SIZE;
 const MAX_CONNECTIONS: usize = 1000;
 
-struct Connection {
-    socket: Socket,
-    state: ConnectionState,
-    read_state: ReadState,
-    write_state: WriteState,
+struct Server {
+    epoll: Epoll,
+    listener: Socket,
+    connections: Vec<Option<Connection>>,
+    events: Vec<epoll_event>,
 }
 
-impl Connection {
-    fn new(socket: Socket) -> Self {
-        Connection {
-            socket: socket,
-            state: ConnectionState::Request,
-            read_state: ReadState::new(),
-            write_state: WriteState::new(),
-        }
+impl Server {
+    fn new(ip: u32, port: u16) -> Result<Self, RedisError> {
+        let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
+        connections.resize_with(MAX_CONNECTIONS, || None);
+
+        let mut events: Vec<epoll_event> = Vec::with_capacity(MAX_CONNECTIONS);
+        events.resize_with(MAX_CONNECTIONS, || epoll_event { events: 0, u64: 0 });
+
+        // create listening socket
+        let listen_socket = Socket::new_tcp();
+        listen_socket.set_reuseaddr()?;
+        listen_socket.set_non_blocking()?;
+
+        let address = make_ipv4_address(ip, port);
+
+        listen_socket.bind(&address)?;
+
+        listen_socket.listen()?;
+
+        // create epoll and add listening socket
+        let epoll = Epoll::new();
+        epoll.add(listen_socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+
+        Ok(Server {
+            epoll: epoll,
+            listener: listen_socket,
+            connections: connections,
+            events: events,
+        })
     }
-}
 
-struct ReadState {
-    buffer: [u8; BUFFER_SIZE],
-    bytes_filled: usize,
-    position: usize,
-    wanted_length: Option<usize>,
-}
+    fn accept_new_connections(&mut self) -> Result<(), RedisError> {
+        loop {
+            match self.listener.accept() {
+                Ok((client_socket, _address)) => {
+                    let client_fd = client_socket.fd;
+                    client_socket.set_non_blocking()?;
+                    self.epoll
+                        .add(client_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+                    let connection = Connection::new(client_socket);
+                    self.connections[client_fd as usize] = Some(connection);
+                }
 
-impl ReadState {
-    fn new() -> Self {
-        ReadState {
-            buffer: [0u8; BUFFER_SIZE],
-            bytes_filled: 0,
-            position: 0,
-            wanted_length: None,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
+        Ok(())
     }
-}
 
-struct WriteState {
-    buffer: [u8; BUFFER_SIZE],
-    size: usize,
-    bytes_sent: usize,
-}
+    fn handle_event(&mut self, event: &epoll_event) -> Result<(), RedisError> {
+        let fd = event.u64 as c_int;
+        let flags = event.events;
 
-impl WriteState {
-    fn new() -> Self {
-        WriteState {
-            buffer: [0u8; BUFFER_SIZE],
-            size: 0,
-            bytes_sent: 0,
+        // listen socket
+        if fd == self.listener.fd && (flags & EPOLLIN as u32) != 0 {
+            self.accept_new_connections()?;
         }
-    }
-}
 
-pub enum ConnectionState {
-    Request,
-    Respond,
-    End,
+        let connection = match &mut self.connections[fd as usize] {
+            Some(connection) => connection,
+            None => return Ok(()), // TODO - this should probably return some sort of error since
+                                   // there is not a connection to a socket that is till there
+        };
+
+        if (flags & EPOLLOUT as u32) != 0 && connection.state == ConnectionState::Write {
+            connection.handle_readable()?;
+        }
+
+        if (flags & EPOLLOUT as u32) != 0 && connection.state == ConnectionState::Write {
+            connection.handle_writeable()?;
+        }
+
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), RedisError> {
-    let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
-    connections.resize_with(MAX_CONNECTIONS, || None);
+    let server = Server::new(0, 1234)?;
 
-    let mut events: Vec<epoll_event> = Vec::with_capacity(MAX_CONNECTIONS);
-    events.resize_with(MAX_CONNECTIONS, || epoll_event { events: 0, u64: 0 });
-
-    // create listening socket
-    let listen_socket = Socket::new_tcp();
-    listen_socket.set_reuseaddr()?;
-    listen_socket.set_non_blocking()?;
-
-    let address = make_ipv4_address(0, 1234);
-
-    listen_socket.bind(&address)?;
-
-    listen_socket.listen()?;
-
-    // create epoll and add listening socket
-    let epoll = Epoll::new();
-    epoll.add(listen_socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
-
-    loop {
-        let amount_events = epoll.wait(&mut events, -1)?;
-
-        for i in 0..amount_events {
-            let event = events[i];
-            let fd = event.u64 as c_int;
-            let flags = event.events;
-
-            if fd == listen_socket.fd && (flags & EPOLLIN as u32) != 0 {
-                accept_new_connections(&listen_socket, &epoll, &mut connections)?;
-            } else if (flags & EPOLLIN as u32) != 0 {
-                match &mut connections[fd as usize] {
-                    Some(connection) => {
-                        match fill_buffer(&connection.socket, &mut connection.read_state) {
-                            Ok(_) => loop {
-                                let maybe_message = try_extract_message(&mut connection.read_state);
-
-                                match maybe_message {
-                                    Some(message) => handle_message(
-                                        message,
-                                        &connection.socket,
-                                        &mut connection.write_state,
-                                    ),
-                                    None => break,
-                                }
-                            },
-                            Err(_) => {
-                                continue;
-                            }
-                        }
-                    }
-                    None => return Err(RedisError::ConnectionClosed),
-                }
-            }
-        }
-    }
+    Ok(())
+    // let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
+    // connections.resize_with(MAX_CONNECTIONS, || None);
+    //
+    // let mut events: Vec<epoll_event> = Vec::with_capacity(MAX_CONNECTIONS);
+    // events.resize_with(MAX_CONNECTIONS, || epoll_event { events: 0, u64: 0 });
+    //
+    // // create listening socket
+    // let listen_socket = Socket::new_tcp();
+    // listen_socket.set_reuseaddr()?;
+    // listen_socket.set_non_blocking()?;
+    //
+    // let address = make_ipv4_address(0, 1234);
+    //
+    // listen_socket.bind(&address)?;
+    //
+    // listen_socket.listen()?;
+    //
+    // // create epoll and add listening socket
+    // let epoll = Epoll::new();
+    // epoll.add(listen_socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+    //
+    // loop {
+    //     let amount_events = epoll.wait(&mut events, -1)?;
+    //
+    //     for i in 0..amount_events {
+    //         let event = events[i];
+    //         let fd = event.u64 as c_int;
+    //         let flags = event.events;
+    //
+    //         // listen socket
+    //         if fd == listen_socket.fd && (flags & EPOLLIN as u32) != 0 {
+    //             accept_new_connections(&listen_socket, &epoll, &mut connections)?;
+    //         }
+    //
+    //         let connection = match &mut connections[fd as usize] {
+    //             Some(connection) => connection,
+    //             None => continue,
+    //         };
+    //
+    //         // read from sockets
+    //         if (flags & EPOLLIN as u32) != 0 && connection.state == ConnectionState::Read {
+    //             read_ready(connection, &epoll)?;
+    //         }
+    //
+    //         // write to sockets
+    //         if (flags & EPOLLOUT as u32) != 0 && connection.state == ConnectionState::Write {
+    //             let write_state = &mut connection.write_state;
+    //             let buffer = &write_state.buffer;
+    //             write_state.bytes_written += connection
+    //                 .socket
+    //                 .write(&buffer[write_state.bytes_written..write_state.size])?;
+    //
+    //             if write_state.size == write_state.bytes_written {
+    //                 write_state.size = 0;
+    //                 write_state.bytes_written = 0;
+    //                 connection.state = ConnectionState::Read;
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 fn accept_new_connections(
@@ -137,7 +173,7 @@ fn accept_new_connections(
             Ok((client_socket, _address)) => {
                 let client_fd = client_socket.fd;
                 client_socket.set_non_blocking()?;
-                epoll.add(client_fd, (EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
+                epoll.add(client_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
                 let connection = Connection::new(client_socket);
                 connections[client_fd as usize] = Some(connection);
             }
@@ -151,6 +187,28 @@ fn accept_new_connections(
     Ok(())
 }
 
+fn read_ready(connection: &mut Connection, epoll: &Epoll) -> Result<(), RedisError> {
+    match fill_buffer(&connection.socket, &mut connection.read_state) {
+        Ok(_) => loop {
+            let maybe_message = try_extract_message(&mut connection.read_state);
+
+            match maybe_message {
+                Some(message) => handle_message(
+                    message,
+                    &connection.socket,
+                    &mut connection.write_state,
+                    &mut connection.state,
+                    epoll,
+                )?,
+                None => break,
+            }
+        },
+        Err(_) => {}
+    }
+
+    Ok(())
+}
+
 #[inline(always)]
 fn fill_buffer(socket: &Socket, state: &mut ReadState) -> Result<(), RedisError> {
     let read_result = socket.read(&mut state.buffer[state.bytes_filled..])?;
@@ -161,20 +219,6 @@ fn fill_buffer(socket: &Socket, state: &mut ReadState) -> Result<(), RedisError>
 
     state.bytes_filled += read_result;
     Ok(())
-}
-
-#[inline]
-fn try_process_messages(connection: &mut Connection) {
-    loop {
-        let maybe_message = { try_extract_message(&mut connection.read_state) };
-
-        let message = match maybe_message {
-            None => return,
-            Some(message) => message,
-        };
-
-        handle_message(message, &connection.socket, &mut connection.write_state);
-    }
 }
 
 fn try_extract_message(state: &mut ReadState) -> Option<&[u8]> {
@@ -222,7 +266,13 @@ fn reset_buffer_if_needed(state: &mut ReadState) {
     }
 }
 
-fn handle_message(buffer: &[u8], socket: &Socket, write_state: &mut WriteState) {
+fn handle_message(
+    buffer: &[u8],
+    socket: &Socket,
+    write_state: &mut WriteState,
+    connection_state: &mut ConnectionState,
+    epoll: &Epoll,
+) -> Result<(), RedisError> {
     let s = std::str::from_utf8(buffer).unwrap().to_string();
 
     println!("client says {}", s);
@@ -232,8 +282,24 @@ fn handle_message(buffer: &[u8], socket: &Socket, write_state: &mut WriteState) 
 
     write_state.buffer[..4].copy_from_slice(&(response_length as u32).to_be_bytes());
     write_state.buffer[4..4 + response.len()].copy_from_slice(response);
+    write_state.size = response_length + 4;
 
-    socket.write_full(&write_state.buffer[..9]).unwrap();
+    write_state.bytes_written += socket
+        .write(&write_state.buffer[write_state.bytes_written..write_state.size])
+        .unwrap();
+
+    if write_state.bytes_written != write_state.size {
+        *connection_state = ConnectionState::Write;
+        epoll.modify(socket.fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
+    } else {
+        if *connection_state == ConnectionState::Write {
+            epoll.modify(socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+        }
+        write_state.size = 0;
+        write_state.bytes_written = 0;
+    }
+
+    Ok(())
 }
 
 // Helpers
