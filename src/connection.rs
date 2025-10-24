@@ -71,6 +71,66 @@ impl Connection {
         Ok(())
     }
 
+    fn try_extract_message(&mut self) -> bool {
+        // TODO - add partial reads here
+
+        self.try_extract_new_message()
+    }
+
+    fn try_extract_new_message(&mut self) -> bool {
+        if self.avaliable_bytes() < 4 {
+            return false;
+        }
+
+        let amount_strings =
+            Self::get_message_length(&self.read_state.buffer[self.read_state.position..]);
+
+        self.read_state.current_message_length = HEADER_SIZE;
+        self.read_state.position += HEADER_SIZE;
+
+        self.try_extract_message_strings(amount_strings)
+    }
+
+    fn try_extract_message_strings(&mut self, amount_strings: usize) -> bool {
+        for i in 0..amount_strings {
+            let result = Self::try_extract_string(
+                &self.read_state.buffer[self.read_state.position..],
+                self.read_state.position,
+            );
+
+            match result {
+                StringExtractionResult::Complete(indices, new_position) => {
+                    let string_length = indices.1 - indices.0;
+
+                    // should return error here if the string length is to much
+                    if self.read_state.current_message_length + string_length > BUFFER_SIZE {
+                        // self.clear_buffer(); clear the buffer here or something sinse this would
+                        // be bigger than the max message size
+                        return false;
+
+                        // TODO - really the error under is the one that should be returned
+                        // return Err(RedisError::MessageTooLarge);
+                    }
+
+                    self.read_state.current_message_length += string_length + HEADER_SIZE;
+                    self.read_state.current_message.push(indices);
+                    self.read_state.position = new_position;
+                }
+                StringExtractionResult::Partial(wanted_string_length) => {
+                    self.read_state.wanted_strings_amount = Some(amount_strings - i);
+                    self.read_state.wanted_string_length = Some(wanted_string_length);
+                    return false;
+                }
+                StringExtractionResult::None => {
+                    self.read_state.wanted_strings_amount = Some(amount_strings - i);
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
     fn try_extract_string(buffer: &[u8], offset: usize) -> StringExtractionResult {
         if buffer.len() < HEADER_SIZE {
             return StringExtractionResult::None;
@@ -261,7 +321,10 @@ pub struct ReadState {
     pub buffer: [u8; BUFFER_SIZE],
     pub bytes_filled: usize,
     pub position: usize,
-    pub wanted_length: Option<usize>,
+    pub wanted_string_length: Option<usize>,
+    pub wanted_strings_amount: Option<usize>,
+    pub current_message: Vec<(usize, usize)>,
+    pub current_message_length: usize,
 }
 
 impl ReadState {
@@ -270,7 +333,10 @@ impl ReadState {
             buffer: [0u8; BUFFER_SIZE],
             bytes_filled: 0,
             position: 0,
-            wanted_length: None,
+            wanted_string_length: None,
+            wanted_strings_amount: None,
+            current_message: Vec::<(usize, usize)>::new(),
+            current_message_length: 0,
         }
     }
 }
@@ -366,6 +432,22 @@ mod tests {
                 test.string, test.expected, result
             );
         }
+    }
+
+    #[test]
+    fn test_try_extract_new_message() {
+        struct TestData {
+            message: &'static [u8],
+            expected_string: String,
+            expected_result: bool,
+            expected_message_length: usize,
+            expected_wanted_string_length: Option<usize>,
+            expected_wanted_strings_amount: Option<usize>,
+        }
+
+        let tests = vec![
+            
+        ];
     }
 
     // #[test]
