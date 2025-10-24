@@ -13,6 +13,7 @@ pub enum ConnectionAction {
     End,
 }
 
+#[derive(Debug, PartialEq)]
 enum StringExtractionResult {
     Complete((usize, usize), usize),
     Partial(usize),
@@ -35,25 +36,26 @@ impl Connection {
     }
 
     pub fn handle_readable(&mut self) -> Result<ConnectionAction, RedisError> {
-        self.fill_read_buffer()?;
-        loop {
-            let message_extraction_result = self.try_extract_message();
-
-            if message_extraction_result = false {
-                return Ok(ConnectionAction::None);
-            }
-
-            match self.handle_message() {
-                ConnectionAction::WantWrite => return Ok(ConnectionAction::WantWrite),
-                _ => {}
-            };
-
-            if self.read_state.position == self.read_state.bytes_filled {
-                break;
-            }
-        }
-
-        Ok(ConnectionAction::None);
+        Ok(ConnectionAction::None)
+        // self.fill_read_buffer()?;
+        // loop {
+        //     let message_extraction_result = self.try_extract_message();
+        //
+        //     if message_extraction_result = false {
+        //         return Ok(ConnectionAction::None);
+        //     }
+        //
+        //     match self.handle_message() {
+        //         ConnectionAction::WantWrite => return Ok(ConnectionAction::WantWrite),
+        //         _ => {}
+        //     };
+        //
+        //     if self.read_state.position == self.read_state.bytes_filled {
+        //         break;
+        //     }
+        // }
+        //
+        // Ok(ConnectionAction::None);
     }
 
     fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
@@ -82,7 +84,7 @@ impl Connection {
 
         let start = offset + HEADER_SIZE;
         let end = offset + HEADER_SIZE + string_length;
-        StringExtractionResult::Complete((start, end), string_length + HEADER_SIZE)
+        StringExtractionResult::Complete((start, end), offset + string_length + HEADER_SIZE)
     }
 
     // pub fn handle_readable(&mut self) -> Result<ConnectionAction, RedisError> {
@@ -299,6 +301,72 @@ pub enum ConnectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_try_extract_string() {
+        struct TestData {
+            string: &'static [u8],
+            offset: usize,
+            expected: StringExtractionResult,
+        }
+
+        let tests = vec![
+            TestData {
+                string: b"\x00\x00\x00\x05hello",
+                offset: 0,
+                expected: StringExtractionResult::Complete((4, 9), 9),
+            },
+            TestData {
+                string: b"\x00\x00\x00\x0bhello world",
+                offset: 5,
+                expected: StringExtractionResult::Complete((9, 20), 20),
+            },
+            TestData {
+                string: b"\x00\x00\x00\x0bhello world\x00\x00\x00\x05hello",
+                offset: 15,
+                expected: StringExtractionResult::Complete((19, 30), 30),
+            },
+            TestData {
+                string: b"\x00\x00\x00\x0bhello",
+                offset: 0,
+                expected: StringExtractionResult::Partial(11),
+            },
+            TestData {
+                string: b"\x00\x00\x00\x0bworld",
+                offset: 999,
+                expected: StringExtractionResult::Partial(11),
+            },
+            TestData {
+                string: b"\x00\x00\x00\x0b",
+                offset: 999,
+                expected: StringExtractionResult::Partial(11),
+            },
+            TestData {
+                string: b"\x00\x00\x00",
+                offset: 0,
+                expected: StringExtractionResult::None,
+            },
+            TestData {
+                string: b"\x00\x00",
+                offset: 50,
+                expected: StringExtractionResult::None,
+            },
+            TestData {
+                string: b"\x00",
+                offset: 100,
+                expected: StringExtractionResult::None,
+            },
+        ];
+
+        for test in tests {
+            let result = Connection::try_extract_string(&test.string, test.offset);
+            assert_eq!(
+                test.expected, result,
+                "for test: {:?}\nexpecetd: {:?}\ngot: {:?}",
+                test.string, test.expected, result
+            );
+        }
+    }
 
     // #[test]
     // fn test_try_extract_message() {
