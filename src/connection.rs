@@ -72,9 +72,20 @@ impl Connection {
     }
 
     fn try_extract_message(&mut self) -> bool {
-        // TODO - add partial reads here
         if let Some(wanted_length) = self.read_state.wanted_string_length {
-            
+            let result = self.try_extract_partial_string(wanted_length);
+
+            if result == false {
+                return false;
+            }
+
+            if self.read_state.wanted_strings_amount.is_none() {
+                return true;
+            }
+        }
+
+        if let Some(wanted_strings_amount) = self.read_state.wanted_strings_amount {
+            return self.try_extract_partial_message_strings(wanted_strings_amount);
         }
 
         self.try_extract_new_message()
@@ -122,7 +133,8 @@ impl Connection {
                 StringExtractionResult::Partial(wanted_string_length) => {
                     self.read_state.wanted_strings_amount = Some(amount_strings - i);
                     self.read_state.wanted_string_length = Some(wanted_string_length);
-                    self.read_state.current_message_bytes_length += HEADER_SIZE + wanted_string_length;
+                    self.read_state.current_message_bytes_length +=
+                        HEADER_SIZE + wanted_string_length;
                     self.read_state.position += HEADER_SIZE;
                     return false;
                 }
@@ -150,6 +162,28 @@ impl Connection {
         let start = offset + HEADER_SIZE;
         let end = offset + HEADER_SIZE + string_length;
         StringExtractionResult::Complete((start, end), offset + string_length + HEADER_SIZE)
+    }
+
+    fn try_extract_partial_string(&mut self, wanted_length: usize) -> bool {
+        if self.avaliable_bytes() < wanted_length {
+            return false;
+        }
+
+        let start = self.read_state.position;
+        let end = start + wanted_length;
+
+        self.read_state.current_message.push((start, end));
+        self.read_state.position = end;
+
+        self.read_state.wanted_string_length = None;
+        self.decrement_wanted_strings();
+
+        true
+    }
+
+    fn try_extract_partial_message_strings(&mut self, wanted_strings_amount: usize) -> bool {
+        let amount_strings = self.read_state.wanted_strings_amount.unwrap();
+        self.try_extract_message_strings(amount_strings)
     }
 
     pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
@@ -195,26 +229,6 @@ impl Connection {
 
     // Helpers
 
-    // #[inline(always)]
-    // fn reset_read_buffer_if_needed(&mut self) {
-    //     if self.read_state.position > 0 && self.read_state.position == self.read_state.bytes_filled
-    //     {
-    //         self.read_state.bytes_filled = 0;
-    //         self.read_state.position = 0;
-    //     }
-    // }
-    //
-    // #[inline]
-    // fn shift_read_buffer_and_remember_partial(&mut self, length: usize, leftover: usize) {
-    //     self.read_state.buffer.copy_within(
-    //         self.read_state.position + 4..self.read_state.bytes_filled,
-    //         0,
-    //     );
-    //     self.read_state.wanted_length = Some(length);
-    //     self.read_state.bytes_filled = leftover - 4;
-    //     self.read_state.position = 0;
-    // }
-
     #[inline(always)]
     fn avaliable_bytes(&self) -> usize {
         self.read_state.bytes_filled - self.read_state.position
@@ -244,6 +258,20 @@ impl Connection {
             | ((slice[2] as u32) << 8)
             | (slice[3] as u32);
         length
+    }
+
+    #[inline]
+    fn decrement_wanted_strings(&mut self) {
+        match self.read_state.wanted_strings_amount {
+            Some(amount) => {
+                if amount == 1 {
+                    self.read_state.wanted_strings_amount = None;
+                } else {
+                    self.read_state.wanted_strings_amount = Some(amount);
+                }
+            }
+            None => {}
+        }
     }
 }
 
