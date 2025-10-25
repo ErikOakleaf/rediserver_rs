@@ -73,6 +73,9 @@ impl Connection {
 
     fn try_extract_message(&mut self) -> bool {
         // TODO - add partial reads here
+        if let Some(wanted_length) = self.read_state.wanted_string_length {
+            
+        }
 
         self.try_extract_new_message()
     }
@@ -85,7 +88,7 @@ impl Connection {
         let amount_strings =
             Self::get_message_length(&self.read_state.buffer[self.read_state.position..]);
 
-        self.read_state.current_message_length = HEADER_SIZE;
+        self.read_state.current_message_bytes_length = HEADER_SIZE;
         self.read_state.position += HEADER_SIZE;
 
         self.try_extract_message_strings(amount_strings)
@@ -94,7 +97,7 @@ impl Connection {
     fn try_extract_message_strings(&mut self, amount_strings: usize) -> bool {
         for i in 0..amount_strings {
             let result = Self::try_extract_string(
-                &self.read_state.buffer[self.read_state.position..],
+                &self.read_state.buffer[self.read_state.position..self.read_state.bytes_filled],
                 self.read_state.position,
             );
 
@@ -103,7 +106,7 @@ impl Connection {
                     let string_length = indices.1 - indices.0;
 
                     // should return error here if the string length is to much
-                    if self.read_state.current_message_length + string_length > BUFFER_SIZE {
+                    if self.read_state.current_message_bytes_length + string_length > BUFFER_SIZE {
                         // self.clear_buffer(); clear the buffer here or something sinse this would
                         // be bigger than the max message size
                         return false;
@@ -112,13 +115,15 @@ impl Connection {
                         // return Err(RedisError::MessageTooLarge);
                     }
 
-                    self.read_state.current_message_length += string_length + HEADER_SIZE;
+                    self.read_state.current_message_bytes_length += string_length + HEADER_SIZE;
                     self.read_state.current_message.push(indices);
                     self.read_state.position = new_position;
                 }
                 StringExtractionResult::Partial(wanted_string_length) => {
                     self.read_state.wanted_strings_amount = Some(amount_strings - i);
                     self.read_state.wanted_string_length = Some(wanted_string_length);
+                    self.read_state.current_message_bytes_length += HEADER_SIZE + wanted_string_length;
+                    self.read_state.position += HEADER_SIZE;
                     return false;
                 }
                 StringExtractionResult::None => {
@@ -138,7 +143,7 @@ impl Connection {
 
         let string_length = Self::get_message_length(buffer);
 
-        if buffer.len() - HEADER_SIZE < string_length {
+        if buffer.len() < HEADER_SIZE + string_length {
             return StringExtractionResult::Partial(string_length);
         }
 
@@ -147,84 +152,9 @@ impl Connection {
         StringExtractionResult::Complete((start, end), offset + string_length + HEADER_SIZE)
     }
 
-    // pub fn handle_readable(&mut self) -> Result<ConnectionAction, RedisError> {
-    //     self.fill_read_buffer()?;
-    //     let (start, end) = match self.try_extract_message() {
-    //         Some((start, end)) => (start, end),
-    //         None => return Ok(ConnectionAction::None),
-    //     };
-    //
-    //     self.handle_message(start, end)
-    // }
-
     pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
         self.try_write_after_writable()
     }
-
-    //
-    // fn try_extract_message(&mut self) -> Option<(usize, usize)> {
-    //     if let Some(message) = self.try_extract_partial_message() {
-    //         return Some(message);
-    //     }
-    //
-    //     if self.avaliable_bytes() < 4 {
-    //         self.reset_read_buffer_if_needed();
-    //         return None;
-    //     }
-    //
-    //     self.try_extract_new_message()
-    // }
-    //
-    // fn try_extract_new_message(&mut self) -> Option<(usize, usize)> {
-    //     let mut start = self.read_state.position;
-    //     let length_slice = &self.read_state.buffer[start..start + 4];
-    //     let length = Self::get_message_length(length_slice).unwrap();
-    //
-    //     let leftover = self.avaliable_bytes();
-    //
-    //     if leftover < length {
-    //         self.shift_read_buffer_and_remember_partial(length, leftover);
-    //         return None;
-    //     }
-    //
-    //     start += 4;
-    //     let end = start + length;
-    //     self.read_state.position = end;
-    //
-    //     Some((start, end))
-    // }
-    //
-    // fn try_extract_partial_message(&mut self) -> Option<(usize, usize)> {
-    //     let length = match self.read_state.wanted_length {
-    //         Some(length) => length,
-    //         None => return None,
-    //     };
-    //
-    //     if self.avaliable_bytes() < length {
-    //         return None;
-    //     }
-    //
-    //     let start = self.read_state.position;
-    //     let end = start + length;
-    //
-    //     self.read_state.position = end;
-    //     self.read_state.wanted_length = None;
-    //
-    //     Some((start, end))
-    // }
-    //
-    // fn handle_message(&mut self, start: usize, end: usize) -> Result<ConnectionAction, RedisError> {
-    //     let message = &self.read_state.buffer[start..end];
-    //     let s = std::str::from_utf8(message).unwrap().to_string();
-    //
-    //     println!("client says {}", s);
-    //
-    //     let response = b"world";
-    //
-    //     self.prepare_response(response);
-    //
-    //     self.try_write_after_read()
-    // }
 
     fn prepare_response(&mut self, response: &[u8]) {
         self.write_state.buffer[..HEADER_SIZE]
@@ -324,7 +254,7 @@ pub struct ReadState {
     pub wanted_string_length: Option<usize>,
     pub wanted_strings_amount: Option<usize>,
     pub current_message: Vec<(usize, usize)>,
-    pub current_message_length: usize,
+    pub current_message_bytes_length: usize,
 }
 
 impl ReadState {
@@ -336,7 +266,7 @@ impl ReadState {
             wanted_string_length: None,
             wanted_strings_amount: None,
             current_message: Vec::<(usize, usize)>::new(),
-            current_message_length: 0,
+            current_message_bytes_length: 0,
         }
     }
 }
@@ -440,14 +370,145 @@ mod tests {
             message: &'static [u8],
             expected_string: String,
             expected_result: bool,
-            expected_message_length: usize,
+            expected_message_bytes_length: usize,
             expected_wanted_string_length: Option<usize>,
             expected_wanted_strings_amount: Option<usize>,
         }
 
         let tests = vec![
-            
+            TestData {
+                message: b"\x00\x00\x00\x01\x00\x00\x00\x0bhello world",
+                expected_string: "hello world".to_string(),
+                expected_result: true,
+                expected_message_bytes_length: 19,
+                expected_wanted_string_length: None,
+                expected_wanted_strings_amount: None,
+            },
+            TestData {
+                message: b"\x00\x00\x00\x02\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                expected_string: "hello world".to_string(),
+                expected_result: true,
+                expected_message_bytes_length: 22,
+                expected_wanted_string_length: None,
+                expected_wanted_strings_amount: None,
+            },
+            TestData {
+                message: b"\x00\x00\x00\x01\x00\x00\x00\x0bhello",
+                expected_string: "".to_string(),
+                expected_result: false,
+                expected_message_bytes_length: 19,
+                expected_wanted_string_length: Some(11),
+                expected_wanted_strings_amount: Some(1),
+            },
+            TestData {
+                message: b"\x00\x00\x00\x01\x00\x00\x00\x0b",
+                expected_string: "".to_string(),
+                expected_result: false,
+                expected_message_bytes_length: 19,
+                expected_wanted_string_length: Some(11),
+                expected_wanted_strings_amount: Some(1),
+            },
+            TestData {
+                message: b"\x00\x00\x00\x02\x00\x00\x00\x05hello",
+                expected_string: "".to_string(),
+                expected_result: false,
+                expected_message_bytes_length: 13,
+                expected_wanted_string_length: None,
+                expected_wanted_strings_amount: Some(1),
+            },
+            TestData {
+                message: b"\x00\x00\x00\x05",
+                expected_string: "".to_string(),
+                expected_result: false,
+                expected_message_bytes_length: 4,
+                expected_wanted_string_length: None,
+                expected_wanted_strings_amount: Some(5),
+            },
+            TestData {
+                message: b"\x00\x00\x00",
+                expected_string: "".to_string(),
+                expected_result: false,
+                expected_message_bytes_length: 0,
+                expected_wanted_string_length: None,
+                expected_wanted_strings_amount: None,
+            },
         ];
+
+        let dummy_socket = Socket { fd: -1 };
+        let mut test_connection = Connection::new(dummy_socket);
+
+        for test in tests {
+            put_new_message_in_read_buffer(&mut test_connection, test.message);
+            let result = test_connection.try_extract_new_message();
+            let result_string = match result {
+                true => test_connection
+                    .read_state
+                    .current_message
+                    .iter()
+                    .map(|(start, end)| {
+                        std::str::from_utf8(&test_connection.read_state.buffer[*start..*end])
+                            .unwrap()
+                    })
+                    .collect::<Vec<&str>>()
+                    .join(" "),
+                false => "".to_string(),
+            };
+            let result_message_bytes_length =
+                test_connection.read_state.current_message_bytes_length;
+            let result_wanted_string_length = test_connection.read_state.wanted_string_length;
+            let result_wanted_strings_amount = test_connection.read_state.wanted_strings_amount;
+
+            assert_eq!(
+                test.expected_result, result,
+                "in test: {:?}\nexpected result: {}\ngot: {}",
+                test.message, test.expected_result, result
+            );
+
+            assert_eq!(
+                test.expected_string, result_string,
+                "in test: {:?}\nexpected result: {}\ngot: {}",
+                test.message, test.expected_string, result_string
+            );
+
+            assert_eq!(
+                test.expected_message_bytes_length, result_message_bytes_length,
+                "in test: {:?}\nexpected result: {}\ngot: {}",
+                test.message, test.expected_message_bytes_length, result_message_bytes_length
+            );
+
+            assert_eq!(
+                test.expected_wanted_string_length, result_wanted_string_length,
+                "in test: {:?}\nexpected result: {:?}\ngot: {:?}",
+                test.message, test.expected_wanted_string_length, result_wanted_string_length,
+            );
+
+            assert_eq!(
+                test.expected_wanted_strings_amount, result_wanted_strings_amount,
+                "in test: {:?}\nexpected result: {:?}\ngot: {:?}",
+                test.message, test.expected_wanted_strings_amount, result_wanted_strings_amount,
+            );
+        }
+    }
+
+    // Test helpers
+
+    fn put_new_message_in_read_buffer(connection: &mut Connection, message: &[u8]) {
+        assert!(
+            message.len() <= BUFFER_SIZE,
+            "Test message too large for buffer"
+        );
+        reset_connection_read_buffer(connection);
+        connection.read_state.buffer[..message.len()].copy_from_slice(message);
+        connection.read_state.bytes_filled = message.len();
+    }
+
+    fn reset_connection_read_buffer(connection: &mut Connection) {
+        connection.read_state.bytes_filled = 0;
+        connection.read_state.position = 0;
+        connection.read_state.current_message_bytes_length = 0;
+        connection.read_state.current_message.clear();
+        connection.read_state.wanted_string_length = None;
+        connection.read_state.wanted_strings_amount = None;
     }
 
     // #[test]
