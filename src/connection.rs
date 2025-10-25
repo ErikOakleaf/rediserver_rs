@@ -182,8 +182,12 @@ impl Connection {
     }
 
     fn try_extract_partial_message_strings(&mut self, wanted_strings_amount: usize) -> bool {
-        let amount_strings = self.read_state.wanted_strings_amount.unwrap();
-        self.try_extract_message_strings(amount_strings)
+        let result = self.try_extract_message_strings(wanted_strings_amount);
+        if result == true {
+            self.read_state.wanted_strings_amount = None;
+            return true;
+        }
+        return false;
     }
 
     pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
@@ -518,6 +522,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_try_extract_message_with_partial_reads() {
+        struct TestData {
+            messages: Vec<&'static [u8]>,
+            expected_strings: Vec<&'static [u8]>,
+        }
+
+        let tests = vec![
+            TestData {
+                messages: vec![b"\x00\x00\x00\x01\x00\x00\x00\x05hello"],
+                expected_strings: vec![b"hello"],
+            },
+            TestData {
+                messages: vec![
+                    b"\x00\x00\x00\x02\x00\x00\x00\x05hello",
+                    b"\x00\x00\x00\x05world",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                messages: vec![
+                    b"\x00\x00\x00\x02\x00\x00\x00\x05hello",
+                    b"\x00\x00\x00\x05wo",
+                    b"rld",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                messages: vec![
+                    b"\x00\x00\x00\x02",
+                    b"\x00\x00\x00\x05",
+                    b"hello",
+                    b"\x00\x00\x00\x05",
+                    b"world",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                messages: vec![
+                    b"\x00",
+                    b"\x00",
+                    b"\x00",
+                    b"\x02",
+                    b"\x00",
+                    b"\x00",
+                    b"\x00",
+                    b"\x05",
+                    b"he",
+                    b"ll",
+                    b"o",
+                    b"\x00\x00",
+                    b"\x00\x05",
+                    b"w",
+                    b"o",
+                    b"r",
+                    b"l",
+                    b"d",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+        ];
+
+        let dummy_socket = Socket { fd: -1 };
+        let mut test_connection = Connection::new(dummy_socket);
+
+        for test in tests {
+            reset_connection_read_buffer(&mut test_connection);
+
+            for message in test.messages {
+                append_to_read_buffer(&mut test_connection, message);
+                test_connection.try_extract_message();
+            }
+
+            assert_eq!(
+                test.expected_strings.len(),
+                test_connection.read_state.current_message.len(),
+                "message length is not correct"
+            );
+
+            for (expected_string, (start, end)) in test
+                .expected_strings
+                .iter()
+                .zip(test_connection.read_state.current_message.iter())
+            {
+                let actual_string = &test_connection.read_state.buffer[*start..*end];
+                assert_eq!(
+                    *expected_string, actual_string,
+                    "expected string: {:?}\ngot: {:?}\n",
+                    *expected_string, actual_string,
+                );
+            }
+        }
+    }
+
     // Test helpers
 
     fn put_new_message_in_read_buffer(connection: &mut Connection, message: &[u8]) {
@@ -530,6 +628,17 @@ mod tests {
         connection.read_state.bytes_filled = message.len();
     }
 
+    fn append_to_read_buffer(connection: &mut Connection, message: &[u8]) {
+        assert!(
+            message.len() <= BUFFER_SIZE - connection.read_state.bytes_filled,
+            "Test message too large for buffer"
+        );
+        connection.read_state.buffer[connection.read_state.bytes_filled
+            ..connection.read_state.bytes_filled + message.len()]
+            .copy_from_slice(message);
+        connection.read_state.bytes_filled += message.len();
+    }
+
     fn reset_connection_read_buffer(connection: &mut Connection) {
         connection.read_state.bytes_filled = 0;
         connection.read_state.position = 0;
@@ -538,201 +647,4 @@ mod tests {
         connection.read_state.wanted_string_length = None;
         connection.read_state.wanted_strings_amount = None;
     }
-
-    // #[test]
-    // fn test_try_extract_message() {
-    //     struct TestData {
-    //         prefix_short_1: Option<u16>,
-    //         prefix_short_2: Option<u16>,
-    //         message: &'static [u8],
-    //         expected: Option<&'static [u8]>,
-    //     }
-    //
-    //     let tests = vec![
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: Some(5),
-    //             message: b"hello",
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: Some(5),
-    //             message: b"world",
-    //             expected: Some(b"world"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: Some(11),
-    //             message: b"hello",
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b" world",
-    //             expected: Some(b"hello world"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: None,
-    //             message: &[],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: Some(5),
-    //             message: b"hello",
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: None,
-    //             message: &[],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: Some(5),
-    //             message: &[],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"hel",
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"lo",
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: Some(5),
-    //             message: b"hello\x00\x00\x00\x05world", // Two messages back-to-back
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: &[],
-    //             expected: Some(b"world"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: Some(5),
-    //             message: b"hello\x00\x00\x00\x05wor", // one and a half messages back-to-back
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"ld",
-    //             expected: Some(b"world"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: Some(0),
-    //             prefix_short_2: None,
-    //             message: &[],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: Some(5),
-    //             message: &[],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"hello",
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: &[0], // sending 1 then 3 bytes for the length
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: &[0, 0, 5],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"hello",
-    //             expected: Some(b"hello"),
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: &[0, 0, 0], // sending 3 then 1 bytes for the length
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: &[5],
-    //             expected: None,
-    //         },
-    //         TestData {
-    //             prefix_short_1: None,
-    //             prefix_short_2: None,
-    //             message: b"world",
-    //             expected: Some(b"world"),
-    //         },
-    //     ];
-    //
-    //     let placeholder_socket = Socket::new_tcp();
-    //     let mut dummy_connection = Connection::new(placeholder_socket);
-    //
-    //     let mut i = 1;
-    //     for test in tests {
-    //         let mut combined_vec: Vec<u8> = Vec::new();
-    //
-    //         if let Some(short1) = test.prefix_short_1 {
-    //             combined_vec.extend_from_slice(&short1.to_be_bytes());
-    //         }
-    //
-    //         if let Some(short2) = test.prefix_short_2 {
-    //             combined_vec.extend_from_slice(&short2.to_be_bytes());
-    //         }
-    //
-    //         combined_vec.extend_from_slice(test.message);
-    //
-    //         for (i, &byte) in combined_vec.iter().enumerate() {
-    //             dummy_connection.read_state.buffer[dummy_connection.read_state.bytes_filled + i] =
-    //                 byte;
-    //         }
-    //         dummy_connection.read_state.bytes_filled += combined_vec.len();
-    //
-    //         let result: Option<(usize, usize)> = dummy_connection.try_extract_message();
-    //         let result_slice =
-    //             result.map(|(start, end)| &dummy_connection.read_state.buffer[start..end]);
-    //
-    //         let format_output = |opt: &Option<&[u8]>| -> String {
-    //             match opt {
-    //                 Some(bytes) => String::from_utf8_lossy(bytes).to_string(),
-    //                 None => "None".to_string(),
-    //             }
-    //         };
-    //
-    //         assert_eq!(
-    //             test.expected,
-    //             result_slice,
-    //             "in test {}\nexpected: {}\ngot: {}\n",
-    //             i,
-    //             format_output(&test.expected),
-    //             format_output(&result_slice)
-    //         );
-    //
-    //         i += 1;
-    //     }
-    // }
 }
