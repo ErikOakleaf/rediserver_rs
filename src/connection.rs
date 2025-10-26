@@ -96,6 +96,7 @@ impl Connection {
             return false;
         }
 
+        self.read_state.current_message_start = self.read_state.position;
         let amount_strings =
             Self::get_message_length(&self.read_state.buffer[self.read_state.position..]);
 
@@ -136,10 +137,22 @@ impl Connection {
                     self.read_state.current_message_bytes_length +=
                         HEADER_SIZE + wanted_string_length;
                     self.read_state.position += HEADER_SIZE;
+
+                    // partial read and buffer is not big enough we shift it back
+                    if BUFFER_SIZE - self.read_state.position < wanted_string_length {
+                        self.shift_read_buffer(self.read_state.current_message_start);
+                    }
+
                     return false;
                 }
                 StringExtractionResult::None => {
                     self.read_state.wanted_strings_amount = Some(amount_strings - i);
+
+                    // partial read and buffer is not big enough we shift it back
+                    if BUFFER_SIZE - self.read_state.position < HEADER_SIZE {
+                        self.shift_read_buffer(self.read_state.current_message_start);
+                    }
+
                     return false;
                 }
             }
@@ -277,6 +290,40 @@ impl Connection {
             None => {}
         }
     }
+
+    #[inline]
+    fn shift_read_buffer(&mut self, keep_from: usize) {
+        debug_assert!(self.read_state.position >= keep_from);
+
+        debug_assert!(
+            self.read_state
+                .current_message
+                .iter()
+                .all(|(s, e)| *s >= keep_from && *e >= keep_from)
+        );
+
+        debug_assert!(
+            keep_from < self.read_state.bytes_filled,
+            "TRYING TO SHIFT MORE BYTES THEN ARE READ IN THE READ BUFFER"
+        );
+
+        let leftover = self.read_state.bytes_filled - keep_from;
+
+        self.read_state
+            .buffer
+            .copy_within(keep_from..self.read_state.bytes_filled, 0);
+        self.read_state.bytes_filled = leftover;
+        self.read_state.position = self.read_state.position - keep_from;
+        self.read_state.current_message_start = 0;
+
+        self.read_state
+            .current_message
+            .iter_mut()
+            .for_each(|(start, end)| {
+                *start -= keep_from;
+                *end -= keep_from;
+            });
+    }
 }
 
 pub struct ReadState {
@@ -286,6 +333,7 @@ pub struct ReadState {
     pub wanted_string_length: Option<usize>,
     pub wanted_strings_amount: Option<usize>,
     pub current_message: Vec<(usize, usize)>,
+    pub current_message_start: usize,
     pub current_message_bytes_length: usize,
 }
 
@@ -298,6 +346,7 @@ impl ReadState {
             wanted_string_length: None,
             wanted_strings_amount: None,
             current_message: Vec::<(usize, usize)>::new(),
+            current_message_start: 0,
             current_message_bytes_length: 0,
         }
     }
@@ -616,6 +665,111 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_try_extract_message_with_partial_reads_on_full_buffer() {
+        macro_rules! repeat_byte {
+            ($byte:literal, $count:expr) => {{
+                const BYTES: &[u8; $count] = &[$byte; $count];
+                BYTES as &[u8]
+            }};
+        }
+
+        struct TestData {
+            messages: Vec<&'static [u8]>,
+            expected_strings: Vec<&'static [u8]>,
+        }
+
+        let tests = vec![
+            TestData {
+                messages: vec![
+                    b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
+                    repeat_byte!(b'a', BUFFER_SIZE - 12),
+                    b"\x00\x00\x00\x02",
+                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                messages: vec![
+                    b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
+                    repeat_byte!(b'a', BUFFER_SIZE - 12),
+                    b"\x00\x00\x00\x02",
+                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                    b"\x00\x00\x00\x01\x00\x00\x0F\x7E",
+                    repeat_byte!(b'a', BUFFER_SIZE - 34),
+                    b"\x00\x00\x00\x02",
+                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                ],
+                expected_strings: vec![b"hello", b"world"],
+            },
+            // TestData {
+            //     messages: vec![
+            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF4",
+            //         repeat_byte!(b'a', BUFFER_SIZE - 16),
+            //         b"\x00\x00\x00\x02\x00\x00\x00\x05",
+            //         b"hello\x00\x00\x00\x05world",
+            //     ],
+            //     expected_strings: vec![b"hello", b"world"],
+            // },
+            // TestData {
+            //     messages: vec![
+            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF4",
+            //         repeat_byte!(b'a', BUFFER_SIZE - 16),
+            //         b"\x00\x00\x00\x02\x00\x00\x00\x05",
+            //         b"hello\x00\x00\x00\x05world",
+            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
+            //         repeat_byte!(b'a', BUFFER_SIZE - 12),
+            //         b"\x00\x00\x00\x02",
+            //         b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+            //     ],
+            //     expected_strings: vec![b"hello", b"world"],
+            // },
+            // TestData {
+            //     messages: vec![
+            //         b"\x00\x00\x00\x01\x00\x00\x0F\xFA",
+            //         repeat_byte!(b'a', BUFFER_SIZE - 14),
+            //         b"\x00\x00\x00\x01\x00\x00\x00\x05hel", // Split "hello"
+            //         b"lo",
+            //     ],
+            //     expected_strings: vec![b"hello"],
+            // },
+        ];
+
+        let dummy_socket = Socket { fd: -1 };
+        let mut test_connection = Connection::new(dummy_socket);
+
+        for test in tests {
+            reset_connection_read_buffer(&mut test_connection);
+
+            let mut string_indices_copy: Vec<(usize, usize)> = Vec::new();
+
+            for message in test.messages {
+                append_to_read_buffer(&mut test_connection, message);
+
+                loop {
+                    let result = test_connection.try_extract_message();
+                    if result == true {
+                        string_indices_copy = test_connection.read_state.current_message.clone();
+                        test_connection.read_state.current_message.clear();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            for (expected_string, (start, end)) in
+                test.expected_strings.iter().zip(string_indices_copy.iter())
+            {
+                let actual_string = &test_connection.read_state.buffer[*start..*end];
+                assert_eq!(
+                    *expected_string, actual_string,
+                    "expected string: {:?}\ngot: {:?}\n",
+                    *expected_string, actual_string,
+                );
+            }
+        }
+    }
+
     // Test helpers
 
     fn put_new_message_in_read_buffer(connection: &mut Connection, message: &[u8]) {
@@ -631,7 +785,9 @@ mod tests {
     fn append_to_read_buffer(connection: &mut Connection, message: &[u8]) {
         assert!(
             message.len() <= BUFFER_SIZE - connection.read_state.bytes_filled,
-            "Test message too large for buffer"
+            "Test message too large for buffer. Bytes left: {} got {}",
+            BUFFER_SIZE - connection.read_state.bytes_filled,
+            message.len(),
         );
         connection.read_state.buffer[connection.read_state.bytes_filled
             ..connection.read_state.bytes_filled + message.len()]
