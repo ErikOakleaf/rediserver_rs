@@ -1,120 +1,10 @@
-use crate::{
-    error::{MAX_MESSAGE_SIZE, ProtocolError, RedisError},
-    net::Socket,
-};
-
-const HEADER_SIZE: usize = 4;
-const BUFFER_SIZE: usize = HEADER_SIZE + MAX_MESSAGE_SIZE;
-
-pub enum ConnectionAction {
-    None,
-    WantRead,
-    WantWrite,
-    End,
-}
+use crate::connection::{BUFFER_SIZE, HEADER_SIZE};
 
 #[derive(Debug, PartialEq)]
 enum StringExtractionResult {
     Complete((usize, usize), usize),
     Partial(usize),
     None,
-}
-
-pub struct Connection {
-    pub socket: Socket,
-    pub read_state: ReadState,
-    pub write_state: WriteState,
-}
-
-impl Connection {
-    pub fn new(socket: Socket) -> Self {
-        Connection {
-            socket: socket,
-            read_state: ReadState::new(),
-            write_state: WriteState::new(),
-        }
-    }
-
-    pub fn handle_readable(&mut self) -> Result<ConnectionAction, RedisError> {
-        Ok(ConnectionAction::None)
-        // self.fill_read_buffer()?;
-        // loop {
-        //     let message_extraction_result = self.try_extract_message();
-        //
-        //     if message_extraction_result == false {
-        //         return Ok(ConnectionAction::None);
-        //     }
-        //
-        //     match self.handle_message() {
-        //         ConnectionAction::WantWrite => return Ok(ConnectionAction::WantWrite),
-        //         _ => {}
-        //     };
-        //
-        //     if self.read_state.position == self.read_state.bytes_filled {
-        //         break;
-        //     }
-        // }
-        //
-        // Ok(ConnectionAction::None);
-    }
-
-    fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
-        let read_result = self
-            .socket
-            .read(&mut self.read_state.buffer[self.read_state.bytes_filled..])?;
-
-        if read_result == 0 {
-            return Ok(()); // TODO - this should maybe be an error or something
-        }
-
-        self.read_state.bytes_filled += read_result;
-        Ok(())
-    }
-
-    // handling of messages
-    fn handle_message(&mut self) {}
-
-    pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
-        self.try_write_after_writable()
-    }
-
-    fn prepare_response(&mut self, response: &[u8]) {
-        self.write_state.buffer[..HEADER_SIZE]
-            .copy_from_slice(&(response.len() as u32).to_be_bytes());
-        self.write_state.buffer[HEADER_SIZE..HEADER_SIZE + response.len()]
-            .copy_from_slice(response);
-        self.write_state.size = response.len() + HEADER_SIZE;
-    }
-
-    fn flush_write_buffer(&mut self) -> Result<bool, RedisError> {
-        let ws = &mut self.write_state;
-        ws.bytes_written += self.socket.write(&ws.buffer[ws.bytes_written..ws.size])?;
-
-        if ws.bytes_written == ws.size {
-            self.write_state.size = 0;
-            self.write_state.bytes_written = 0;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn try_write_after_read(&mut self) -> Result<ConnectionAction, RedisError> {
-        if self.flush_write_buffer()? {
-            Ok(ConnectionAction::None)
-        } else {
-            Ok(ConnectionAction::WantWrite)
-        }
-    }
-
-    fn try_write_after_writable(&mut self) -> Result<ConnectionAction, RedisError> {
-        if self.flush_write_buffer()? {
-            Ok(ConnectionAction::WantRead)
-        } else {
-            Ok(ConnectionAction::None)
-        }
-    }
-
 }
 
 pub struct ReadState {
@@ -173,8 +63,7 @@ impl ReadState {
         }
 
         self.current_message_start = self.position;
-        let amount_strings =
-            Self::get_message_length(&self.buffer[self.position..]);
+        let amount_strings = Self::get_message_length(&self.buffer[self.position..]);
 
         self.current_message_bytes_length = HEADER_SIZE;
         self.position += HEADER_SIZE;
@@ -210,8 +99,7 @@ impl ReadState {
                 StringExtractionResult::Partial(wanted_string_length) => {
                     self.wanted_strings_amount = Some(amount_strings - i);
                     self.wanted_string_length = Some(wanted_string_length);
-                    self.current_message_bytes_length +=
-                        HEADER_SIZE + wanted_string_length;
+                    self.current_message_bytes_length += HEADER_SIZE + wanted_string_length;
                     self.position += HEADER_SIZE;
 
                     // partial read and buffer is not big enough we shift it back
@@ -331,8 +219,7 @@ impl ReadState {
         debug_assert!(self.position >= keep_from);
 
         debug_assert!(
-            self
-                .current_message
+            self.current_message
                 .iter()
                 .all(|(s, e)| *s >= keep_from && *e >= keep_from),
             "current_message contains ranges before keep_from boundary: keep_from={}, current_message={:?}",
@@ -347,44 +234,16 @@ impl ReadState {
 
         let leftover = self.bytes_filled - keep_from;
 
-        self
-            .buffer
-            .copy_within(keep_from..self.bytes_filled, 0);
+        self.buffer.copy_within(keep_from..self.bytes_filled, 0);
         self.bytes_filled = leftover;
         self.position = self.position - keep_from;
         self.current_message_start = 0;
 
-        self
-            .current_message
-            .iter_mut()
-            .for_each(|(start, end)| {
-                *start -= keep_from;
-                *end -= keep_from;
-            });
+        self.current_message.iter_mut().for_each(|(start, end)| {
+            *start -= keep_from;
+            *end -= keep_from;
+        });
     }
-}
-
-pub struct WriteState {
-    pub buffer: [u8; BUFFER_SIZE],
-    pub size: usize,
-    pub bytes_written: usize,
-}
-
-impl WriteState {
-    pub fn new() -> Self {
-        WriteState {
-            buffer: [0u8; BUFFER_SIZE],
-            size: 0,
-            bytes_written: 0,
-        }
-    }
-}
-
-#[derive(PartialEq)]
-pub enum ConnectionState {
-    Read,
-    Write,
-    End,
 }
 
 #[cfg(test)]
@@ -527,29 +386,25 @@ mod tests {
             },
         ];
 
-        let dummy_socket = Socket { fd: -1 };
-        let mut test_connection = Connection::new(dummy_socket);
+        let mut read_state = ReadState::new();
 
         for test in tests {
-            put_new_message_in_read_buffer(&mut test_connection, test.message);
-            let result = test_connection.read_state.try_extract_new_message();
+            put_new_message_in_read_buffer(&mut read_state, test.message);
+            let result = read_state.try_extract_new_message();
             let result_string = match result {
-                true => test_connection
-                    .read_state
+                true => read_state
                     .current_message
                     .iter()
                     .map(|(start, end)| {
-                        std::str::from_utf8(&test_connection.read_state.buffer[*start..*end])
-                            .unwrap()
+                        std::str::from_utf8(&read_state.buffer[*start..*end]).unwrap()
                     })
                     .collect::<Vec<&str>>()
                     .join(" "),
                 false => "".to_string(),
             };
-            let result_message_bytes_length =
-                test_connection.read_state.current_message_bytes_length;
-            let result_wanted_string_length = test_connection.read_state.wanted_string_length;
-            let result_wanted_strings_amount = test_connection.read_state.wanted_strings_amount;
+            let result_message_bytes_length = read_state.current_message_bytes_length;
+            let result_wanted_string_length = read_state.wanted_string_length;
+            let result_wanted_strings_amount = read_state.wanted_strings_amount;
 
             assert_eq!(
                 test.expected_result, result,
@@ -645,29 +500,28 @@ mod tests {
             },
         ];
 
-        let dummy_socket = Socket { fd: -1 };
-        let mut test_connection = Connection::new(dummy_socket);
 
+        let mut read_state = ReadState::new();
         for test in tests {
-            reset_connection_read_buffer(&mut test_connection);
+            reset_read_buffer(&mut read_state);
 
             for message in test.messages {
-                append_to_read_buffer(&mut test_connection, message);
-                test_connection.read_state.try_extract_message();
+                append_to_read_buffer(&mut read_state, message);
+                read_state.try_extract_message();
             }
 
             assert_eq!(
                 test.expected_strings.len(),
-                test_connection.read_state.current_message.len(),
+                read_state.current_message.len(),
                 "message length is not correct"
             );
 
             for (expected_string, (start, end)) in test
                 .expected_strings
                 .iter()
-                .zip(test_connection.read_state.current_message.iter())
+                .zip(read_state.current_message.iter())
             {
-                let actual_string = &test_connection.read_state.buffer[*start..*end];
+                let actual_string = &read_state.buffer[*start..*end];
                 assert_eq!(
                     *expected_string, actual_string,
                     "expected string: {:?}\ngot: {:?}\n",
@@ -788,24 +642,24 @@ mod tests {
                 expected_strings: vec![b"hello", b"world"],
             },
         ];
-        let dummy_socket = Socket { fd: -1 };
-        let mut test_connection = Connection::new(dummy_socket);
+
+        let mut read_state = ReadState::new();
         let mut string_indices_copy = Vec::<(usize, usize)>::new();
 
         for mut test in tests {
-            reset_connection_read_buffer(&mut test_connection);
+            reset_read_buffer(&mut read_state);
 
             loop {
                 append_to_read_buffer_from_message_buffer(
-                    &mut test_connection,
+                    &mut read_state,
                     &mut test.message_buffer,
                 );
 
-                let result = test_connection.read_state.try_extract_message();
+                let result = read_state.try_extract_message();
 
                 if result == true {
-                    string_indices_copy = test_connection.read_state.current_message.clone();
-                    test_connection.read_state.current_message.clear();
+                    string_indices_copy = read_state.current_message.clone();
+                    read_state.current_message.clear();
                 }
 
                 if test.message_buffer.bytes.len() == test.message_buffer.position {
@@ -816,7 +670,7 @@ mod tests {
             for (expected_strings, (start, end)) in
                 test.expected_strings.iter().zip(string_indices_copy.iter())
             {
-                let actual_string = &test_connection.read_state.buffer[*start..*end];
+                let actual_string = &read_state.buffer[*start..*end];
                 assert_eq!(
                     *expected_strings, actual_string,
                     "expected string: {:?}\ngot: {:?}\n",
@@ -833,55 +687,53 @@ mod tests {
         position: usize,
     }
 
-    fn put_new_message_in_read_buffer(connection: &mut Connection, message: &[u8]) {
+    fn put_new_message_in_read_buffer(read_state: &mut ReadState, message: &[u8]) {
         assert!(
             message.len() <= BUFFER_SIZE,
             "Test message too large for buffer"
         );
-        reset_connection_read_buffer(connection);
-        connection.read_state.buffer[..message.len()].copy_from_slice(message);
-        connection.read_state.bytes_filled = message.len();
+        reset_read_buffer(read_state);
+        read_state.buffer[..message.len()].copy_from_slice(message);
+        read_state.bytes_filled = message.len();
     }
 
-    fn append_to_read_buffer(connection: &mut Connection, message: &[u8]) {
+    fn append_to_read_buffer(read_state: &mut ReadState, message: &[u8]) {
         assert!(
-            message.len() <= BUFFER_SIZE - connection.read_state.bytes_filled,
+            message.len() <= BUFFER_SIZE - read_state.bytes_filled,
             "Test message too large for buffer. Bytes left: {} got {}",
-            BUFFER_SIZE - connection.read_state.bytes_filled,
+            BUFFER_SIZE - read_state.bytes_filled,
             message.len(),
         );
-        connection.read_state.buffer[connection.read_state.bytes_filled
-            ..connection.read_state.bytes_filled + message.len()]
+        read_state.buffer[read_state.bytes_filled..read_state.bytes_filled + message.len()]
             .copy_from_slice(message);
-        connection.read_state.bytes_filled += message.len();
+        read_state.bytes_filled += message.len();
     }
 
     fn append_to_read_buffer_from_message_buffer(
-        connection: &mut Connection,
+        read_state: &mut ReadState,
         message_buffer: &mut MessageBuffer,
     ) {
-        let space_available = BUFFER_SIZE - connection.read_state.bytes_filled;
+        let space_available = BUFFER_SIZE - read_state.bytes_filled;
         let bytes_remaining = message_buffer.bytes.len() - message_buffer.position;
         let bytes_to_copy = space_available.min(bytes_remaining);
 
-        connection.read_state.buffer[connection.read_state.bytes_filled
-            ..connection.read_state.bytes_filled + bytes_to_copy]
+        read_state.buffer[read_state.bytes_filled..read_state.bytes_filled + bytes_to_copy]
             .copy_from_slice(
                 &message_buffer.bytes
                     [message_buffer.position..message_buffer.position + bytes_to_copy],
             );
 
         // Update both positions
-        connection.read_state.bytes_filled += bytes_to_copy;
+        read_state.bytes_filled += bytes_to_copy;
         message_buffer.position += bytes_to_copy;
     }
 
-    fn reset_connection_read_buffer(connection: &mut Connection) {
-        connection.read_state.bytes_filled = 0;
-        connection.read_state.position = 0;
-        connection.read_state.current_message_bytes_length = 0;
-        connection.read_state.current_message.clear();
-        connection.read_state.wanted_string_length = None;
-        connection.read_state.wanted_strings_amount = None;
+    fn reset_read_buffer(read_state: &mut ReadState) {
+        read_state.bytes_filled = 0;
+        read_state.position = 0;
+        read_state.current_message_bytes_length = 0;
+        read_state.current_message.clear();
+        read_state.wanted_string_length = None;
+        read_state.wanted_strings_amount = None;
     }
 }
