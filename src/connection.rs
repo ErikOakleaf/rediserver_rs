@@ -93,6 +93,12 @@ impl Connection {
 
     fn try_extract_new_message(&mut self) -> bool {
         if self.avaliable_bytes() < 4 {
+
+            // shift here if we have a partially read amount strings header on a full buffer
+            if BUFFER_SIZE - self.read_state.position < 4 {
+                self.shift_read_buffer(self.read_state.position);
+            }
+
             return false;
         }
 
@@ -281,10 +287,10 @@ impl Connection {
     fn decrement_wanted_strings(&mut self) {
         match self.read_state.wanted_strings_amount {
             Some(amount) => {
-                if amount == 1 {
+                if amount <= 1 {
                     self.read_state.wanted_strings_amount = None;
                 } else {
-                    self.read_state.wanted_strings_amount = Some(amount);
+                    self.read_state.wanted_strings_amount = Some(amount - 1);
                 }
             }
             None => {}
@@ -299,7 +305,10 @@ impl Connection {
             self.read_state
                 .current_message
                 .iter()
-                .all(|(s, e)| *s >= keep_from && *e >= keep_from)
+                .all(|(s, e)| *s >= keep_from && *e >= keep_from),
+            "current_message contains ranges before keep_from boundary: keep_from={}, current_message={:?}",
+            keep_from,
+            self.read_state.current_message
         );
 
         debug_assert!(
@@ -675,102 +684,151 @@ mod tests {
         }
 
         struct TestData {
-            messages: Vec<&'static [u8]>,
+            message_buffer: MessageBuffer,
             expected_strings: Vec<&'static [u8]>,
         }
 
         let tests = vec![
             TestData {
-                messages: vec![
-                    b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
-                    repeat_byte!(b'a', BUFFER_SIZE - 12),
-                    b"\x00\x00\x00\x02",
-                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
-                ],
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xF8");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 12));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x05hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
                 expected_strings: vec![b"hello", b"world"],
             },
             TestData {
-                messages: vec![
-                    b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
-                    repeat_byte!(b'a', BUFFER_SIZE - 12),
-                    b"\x00\x00\x00\x02",
-                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
-                    b"\x00\x00\x00\x01\x00\x00\x0F\x7E",
-                    repeat_byte!(b'a', BUFFER_SIZE - 34),
-                    b"\x00\x00\x00\x02",
-                    b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
-                ],
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xFA");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 10));
+                        bytes.extend_from_slice(b"\x00\x00");
+                        bytes.extend_from_slice(b"\x00\x02");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x05hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
                 expected_strings: vec![b"hello", b"world"],
             },
-            // TestData {
-            //     messages: vec![
-            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF4",
-            //         repeat_byte!(b'a', BUFFER_SIZE - 16),
-            //         b"\x00\x00\x00\x02\x00\x00\x00\x05",
-            //         b"hello\x00\x00\x00\x05world",
-            //     ],
-            //     expected_strings: vec![b"hello", b"world"],
-            // },
-            // TestData {
-            //     messages: vec![
-            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF4",
-            //         repeat_byte!(b'a', BUFFER_SIZE - 16),
-            //         b"\x00\x00\x00\x02\x00\x00\x00\x05",
-            //         b"hello\x00\x00\x00\x05world",
-            //         b"\x00\x00\x00\x01\x00\x00\x0F\xF8",
-            //         repeat_byte!(b'a', BUFFER_SIZE - 12),
-            //         b"\x00\x00\x00\x02",
-            //         b"\x00\x00\x00\x05hello\x00\x00\x00\x05world",
-            //     ],
-            //     expected_strings: vec![b"hello", b"world"],
-            // },
-            // TestData {
-            //     messages: vec![
-            //         b"\x00\x00\x00\x01\x00\x00\x0F\xFA",
-            //         repeat_byte!(b'a', BUFFER_SIZE - 14),
-            //         b"\x00\x00\x00\x01\x00\x00\x00\x05hel", // Split "hello"
-            //         b"lo",
-            //     ],
-            //     expected_strings: vec![b"hello"],
-            // },
+            TestData {
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xF4");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 16));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02\x00\x00\x00\x05");
+                        bytes.extend_from_slice(b"hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xF6");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 14));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02\x00\x00");
+                        bytes.extend_from_slice(b"\x00\x05");
+                        bytes.extend_from_slice(b"hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
+                expected_strings: vec![b"hello", b"world"],
+            },
+            // Same tests as above but repeated twice so two shifts would have to happen here
+            TestData {
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xF8");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 12));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x05hello\x00\x00\x00\x05world");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xE2");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 34));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x05hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
+                expected_strings: vec![b"hello", b"world"],
+            },
+            TestData {
+                message_buffer: MessageBuffer {
+                    bytes: {
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xF4");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 16));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02\x00\x00\x00\x05");
+                        bytes.extend_from_slice(b"hello\x00\x00\x00\x05world");
+                        bytes.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x0F\xEE");
+                        bytes.extend_from_slice(&repeat_byte!(b'a', BUFFER_SIZE - 22));
+                        bytes.extend_from_slice(b"\x00\x00\x00\x02\x00\x00\x00\x05");
+                        bytes.extend_from_slice(b"hello\x00\x00\x00\x05world");
+                        bytes
+                    },
+                    position: 0,
+                },
+                expected_strings: vec![b"hello", b"world"],
+            },
         ];
-
         let dummy_socket = Socket { fd: -1 };
         let mut test_connection = Connection::new(dummy_socket);
+        let mut string_indices_copy = Vec::<(usize, usize)>::new();
 
-        for test in tests {
+        for mut test in tests {
             reset_connection_read_buffer(&mut test_connection);
 
-            let mut string_indices_copy: Vec<(usize, usize)> = Vec::new();
+            loop {
+                append_to_read_buffer_from_message_buffer(
+                    &mut test_connection,
+                    &mut test.message_buffer,
+                );
 
-            for message in test.messages {
-                append_to_read_buffer(&mut test_connection, message);
+                let result = test_connection.try_extract_message();
 
-                loop {
-                    let result = test_connection.try_extract_message();
-                    if result == true {
-                        string_indices_copy = test_connection.read_state.current_message.clone();
-                        test_connection.read_state.current_message.clear();
-                    } else {
-                        break;
-                    }
+                if result == true {
+                    string_indices_copy = test_connection.read_state.current_message.clone();
+                    test_connection.read_state.current_message.clear();
+                }
+
+                if test.message_buffer.bytes.len() == test.message_buffer.position {
+                    break;
                 }
             }
 
-            for (expected_string, (start, end)) in
+            for (expected_strings, (start, end)) in
                 test.expected_strings.iter().zip(string_indices_copy.iter())
             {
                 let actual_string = &test_connection.read_state.buffer[*start..*end];
                 assert_eq!(
-                    *expected_string, actual_string,
+                    *expected_strings, actual_string,
                     "expected string: {:?}\ngot: {:?}\n",
-                    *expected_string, actual_string,
+                    *expected_strings, actual_string,
                 );
             }
         }
     }
 
     // Test helpers
+
+    struct MessageBuffer {
+        bytes: Vec<u8>,
+        position: usize,
+    }
 
     fn put_new_message_in_read_buffer(connection: &mut Connection, message: &[u8]) {
         assert!(
@@ -793,6 +851,26 @@ mod tests {
             ..connection.read_state.bytes_filled + message.len()]
             .copy_from_slice(message);
         connection.read_state.bytes_filled += message.len();
+    }
+
+    fn append_to_read_buffer_from_message_buffer(
+        connection: &mut Connection,
+        message_buffer: &mut MessageBuffer,
+    ) {
+        let space_available = BUFFER_SIZE - connection.read_state.bytes_filled;
+        let bytes_remaining = message_buffer.bytes.len() - message_buffer.position;
+        let bytes_to_copy = space_available.min(bytes_remaining);
+
+        connection.read_state.buffer[connection.read_state.bytes_filled
+            ..connection.read_state.bytes_filled + bytes_to_copy]
+            .copy_from_slice(
+                &message_buffer.bytes
+                    [message_buffer.position..message_buffer.position + bytes_to_copy],
+            );
+
+        // Update both positions
+        connection.read_state.bytes_filled += bytes_to_copy;
+        message_buffer.position += bytes_to_copy;
     }
 
     fn reset_connection_read_buffer(connection: &mut Connection) {
