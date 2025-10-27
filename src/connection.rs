@@ -41,7 +41,7 @@ impl Connection {
         // loop {
         //     let message_extraction_result = self.try_extract_message();
         //
-        //     if message_extraction_result = false {
+        //     if message_extraction_result == false {
         //         return Ok(ConnectionAction::None);
         //     }
         //
@@ -71,143 +71,8 @@ impl Connection {
         Ok(())
     }
 
-    fn try_extract_message(&mut self) -> bool {
-        if let Some(wanted_length) = self.read_state.wanted_string_length {
-            let result = self.try_extract_partial_string(wanted_length);
-
-            if result == false {
-                return false;
-            }
-
-            if self.read_state.wanted_strings_amount.is_none() {
-                return true;
-            }
-        }
-
-        if let Some(wanted_strings_amount) = self.read_state.wanted_strings_amount {
-            return self.try_extract_partial_message_strings(wanted_strings_amount);
-        }
-
-        self.try_extract_new_message()
-    }
-
-    fn try_extract_new_message(&mut self) -> bool {
-        if self.avaliable_bytes() < 4 {
-
-            // shift here if we have a partially read amount strings header on a full buffer
-            if BUFFER_SIZE - self.read_state.position < 4 {
-                self.shift_read_buffer(self.read_state.position);
-            }
-
-            return false;
-        }
-
-        self.read_state.current_message_start = self.read_state.position;
-        let amount_strings =
-            Self::get_message_length(&self.read_state.buffer[self.read_state.position..]);
-
-        self.read_state.current_message_bytes_length = HEADER_SIZE;
-        self.read_state.position += HEADER_SIZE;
-
-        self.try_extract_message_strings(amount_strings)
-    }
-
-    fn try_extract_message_strings(&mut self, amount_strings: usize) -> bool {
-        for i in 0..amount_strings {
-            let result = Self::try_extract_string(
-                &self.read_state.buffer[self.read_state.position..self.read_state.bytes_filled],
-                self.read_state.position,
-            );
-
-            match result {
-                StringExtractionResult::Complete(indices, new_position) => {
-                    let string_length = indices.1 - indices.0;
-
-                    // should return error here if the string length is to much
-                    if self.read_state.current_message_bytes_length + string_length > BUFFER_SIZE {
-                        // self.clear_buffer(); clear the buffer here or something sinse this would
-                        // be bigger than the max message size
-                        return false;
-
-                        // TODO - really the error under is the one that should be returned
-                        // return Err(RedisError::MessageTooLarge);
-                    }
-
-                    self.read_state.current_message_bytes_length += string_length + HEADER_SIZE;
-                    self.read_state.current_message.push(indices);
-                    self.read_state.position = new_position;
-                }
-                StringExtractionResult::Partial(wanted_string_length) => {
-                    self.read_state.wanted_strings_amount = Some(amount_strings - i);
-                    self.read_state.wanted_string_length = Some(wanted_string_length);
-                    self.read_state.current_message_bytes_length +=
-                        HEADER_SIZE + wanted_string_length;
-                    self.read_state.position += HEADER_SIZE;
-
-                    // partial read and buffer is not big enough we shift it back
-                    if BUFFER_SIZE - self.read_state.position < wanted_string_length {
-                        self.shift_read_buffer(self.read_state.current_message_start);
-                    }
-
-                    return false;
-                }
-                StringExtractionResult::None => {
-                    self.read_state.wanted_strings_amount = Some(amount_strings - i);
-
-                    // partial read and buffer is not big enough we shift it back
-                    if BUFFER_SIZE - self.read_state.position < HEADER_SIZE {
-                        self.shift_read_buffer(self.read_state.current_message_start);
-                    }
-
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
-    fn try_extract_string(buffer: &[u8], offset: usize) -> StringExtractionResult {
-        if buffer.len() < HEADER_SIZE {
-            return StringExtractionResult::None;
-        }
-
-        let string_length = Self::get_message_length(buffer);
-
-        if buffer.len() < HEADER_SIZE + string_length {
-            return StringExtractionResult::Partial(string_length);
-        }
-
-        let start = offset + HEADER_SIZE;
-        let end = offset + HEADER_SIZE + string_length;
-        StringExtractionResult::Complete((start, end), offset + string_length + HEADER_SIZE)
-    }
-
-    fn try_extract_partial_string(&mut self, wanted_length: usize) -> bool {
-        if self.avaliable_bytes() < wanted_length {
-            return false;
-        }
-
-        let start = self.read_state.position;
-        let end = start + wanted_length;
-
-        self.read_state.current_message.push((start, end));
-        self.read_state.position = end;
-
-        self.read_state.wanted_string_length = None;
-        self.decrement_wanted_strings();
-
-        true
-    }
-
-    fn try_extract_partial_message_strings(&mut self, wanted_strings_amount: usize) -> bool {
-        let result = self.try_extract_message_strings(wanted_strings_amount);
-        if result == true {
-            self.read_state.wanted_strings_amount = None;
-            return true;
-        }
-        return false;
-    }
+    // handling of messages
+    fn handle_message(&mut self) {}
 
     pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
         self.try_write_after_writable()
@@ -250,11 +115,175 @@ impl Connection {
         }
     }
 
+}
+
+pub struct ReadState {
+    pub buffer: [u8; BUFFER_SIZE],
+    pub bytes_filled: usize,
+    pub position: usize,
+    pub wanted_string_length: Option<usize>,
+    pub wanted_strings_amount: Option<usize>,
+    pub current_message: Vec<(usize, usize)>,
+    pub current_message_start: usize,
+    pub current_message_bytes_length: usize,
+}
+
+impl ReadState {
+    pub fn new() -> Self {
+        ReadState {
+            buffer: [0u8; BUFFER_SIZE],
+            bytes_filled: 0,
+            position: 0,
+            wanted_string_length: None,
+            wanted_strings_amount: None,
+            current_message: Vec::<(usize, usize)>::new(),
+            current_message_start: 0,
+            current_message_bytes_length: 0,
+        }
+    }
+
+    fn try_extract_message(&mut self) -> bool {
+        if let Some(wanted_length) = self.wanted_string_length {
+            let result = self.try_extract_partial_string(wanted_length);
+
+            if result == false {
+                return false;
+            }
+
+            if self.wanted_strings_amount.is_none() {
+                return true;
+            }
+        }
+
+        if let Some(wanted_strings_amount) = self.wanted_strings_amount {
+            return self.try_extract_partial_message_strings(wanted_strings_amount);
+        }
+
+        self.try_extract_new_message()
+    }
+
+    fn try_extract_new_message(&mut self) -> bool {
+        if self.avaliable_bytes() < 4 {
+            // shift here if we have a partially read amount strings header on a full buffer
+            if BUFFER_SIZE - self.position < 4 {
+                self.shift_read_buffer(self.position);
+            }
+
+            return false;
+        }
+
+        self.current_message_start = self.position;
+        let amount_strings =
+            Self::get_message_length(&self.buffer[self.position..]);
+
+        self.current_message_bytes_length = HEADER_SIZE;
+        self.position += HEADER_SIZE;
+
+        self.try_extract_message_strings(amount_strings)
+    }
+
+    fn try_extract_message_strings(&mut self, amount_strings: usize) -> bool {
+        for i in 0..amount_strings {
+            let result = Self::try_extract_string(
+                &self.buffer[self.position..self.bytes_filled],
+                self.position,
+            );
+
+            match result {
+                StringExtractionResult::Complete(indices, new_position) => {
+                    let string_length = indices.1 - indices.0;
+
+                    // should return error here if the string length is to much
+                    if self.current_message_bytes_length + string_length > BUFFER_SIZE {
+                        // self.clear_buffer(); clear the buffer here or something sinse this would
+                        // be bigger than the max message size
+                        return false;
+
+                        // TODO - really the error under is the one that should be returned
+                        // return Err(RedisError::MessageTooLarge);
+                    }
+
+                    self.current_message_bytes_length += string_length + HEADER_SIZE;
+                    self.current_message.push(indices);
+                    self.position = new_position;
+                }
+                StringExtractionResult::Partial(wanted_string_length) => {
+                    self.wanted_strings_amount = Some(amount_strings - i);
+                    self.wanted_string_length = Some(wanted_string_length);
+                    self.current_message_bytes_length +=
+                        HEADER_SIZE + wanted_string_length;
+                    self.position += HEADER_SIZE;
+
+                    // partial read and buffer is not big enough we shift it back
+                    if BUFFER_SIZE - self.position < wanted_string_length {
+                        self.shift_read_buffer(self.current_message_start);
+                    }
+
+                    return false;
+                }
+                StringExtractionResult::None => {
+                    self.wanted_strings_amount = Some(amount_strings - i);
+
+                    // partial read and buffer is not big enough we shift it back
+                    if BUFFER_SIZE - self.position < HEADER_SIZE {
+                        self.shift_read_buffer(self.current_message_start);
+                    }
+
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    fn try_extract_string(buffer: &[u8], offset: usize) -> StringExtractionResult {
+        if buffer.len() < HEADER_SIZE {
+            return StringExtractionResult::None;
+        }
+
+        let string_length = Self::get_message_length(buffer);
+
+        if buffer.len() < HEADER_SIZE + string_length {
+            return StringExtractionResult::Partial(string_length);
+        }
+
+        let start = offset + HEADER_SIZE;
+        let end = offset + HEADER_SIZE + string_length;
+        StringExtractionResult::Complete((start, end), offset + string_length + HEADER_SIZE)
+    }
+
+    fn try_extract_partial_string(&mut self, wanted_length: usize) -> bool {
+        if self.avaliable_bytes() < wanted_length {
+            return false;
+        }
+
+        let start = self.position;
+        let end = start + wanted_length;
+
+        self.current_message.push((start, end));
+        self.position = end;
+
+        self.wanted_string_length = None;
+        self.decrement_wanted_strings();
+
+        true
+    }
+
+    fn try_extract_partial_message_strings(&mut self, wanted_strings_amount: usize) -> bool {
+        let result = self.try_extract_message_strings(wanted_strings_amount);
+        if result == true {
+            self.wanted_strings_amount = None;
+            return true;
+        }
+        return false;
+    }
+
     // Helpers
 
     #[inline(always)]
     fn avaliable_bytes(&self) -> usize {
-        self.read_state.bytes_filled - self.read_state.position
+        self.bytes_filled - self.position
     }
 
     #[inline]
@@ -285,12 +314,12 @@ impl Connection {
 
     #[inline]
     fn decrement_wanted_strings(&mut self) {
-        match self.read_state.wanted_strings_amount {
+        match self.wanted_strings_amount {
             Some(amount) => {
                 if amount <= 1 {
-                    self.read_state.wanted_strings_amount = None;
+                    self.wanted_strings_amount = None;
                 } else {
-                    self.read_state.wanted_strings_amount = Some(amount - 1);
+                    self.wanted_strings_amount = Some(amount - 1);
                 }
             }
             None => {}
@@ -299,65 +328,39 @@ impl Connection {
 
     #[inline]
     fn shift_read_buffer(&mut self, keep_from: usize) {
-        debug_assert!(self.read_state.position >= keep_from);
+        debug_assert!(self.position >= keep_from);
 
         debug_assert!(
-            self.read_state
+            self
                 .current_message
                 .iter()
                 .all(|(s, e)| *s >= keep_from && *e >= keep_from),
             "current_message contains ranges before keep_from boundary: keep_from={}, current_message={:?}",
             keep_from,
-            self.read_state.current_message
+            self.current_message
         );
 
         debug_assert!(
-            keep_from < self.read_state.bytes_filled,
+            keep_from < self.bytes_filled,
             "TRYING TO SHIFT MORE BYTES THEN ARE READ IN THE READ BUFFER"
         );
 
-        let leftover = self.read_state.bytes_filled - keep_from;
+        let leftover = self.bytes_filled - keep_from;
 
-        self.read_state
+        self
             .buffer
-            .copy_within(keep_from..self.read_state.bytes_filled, 0);
-        self.read_state.bytes_filled = leftover;
-        self.read_state.position = self.read_state.position - keep_from;
-        self.read_state.current_message_start = 0;
+            .copy_within(keep_from..self.bytes_filled, 0);
+        self.bytes_filled = leftover;
+        self.position = self.position - keep_from;
+        self.current_message_start = 0;
 
-        self.read_state
+        self
             .current_message
             .iter_mut()
             .for_each(|(start, end)| {
                 *start -= keep_from;
                 *end -= keep_from;
             });
-    }
-}
-
-pub struct ReadState {
-    pub buffer: [u8; BUFFER_SIZE],
-    pub bytes_filled: usize,
-    pub position: usize,
-    pub wanted_string_length: Option<usize>,
-    pub wanted_strings_amount: Option<usize>,
-    pub current_message: Vec<(usize, usize)>,
-    pub current_message_start: usize,
-    pub current_message_bytes_length: usize,
-}
-
-impl ReadState {
-    pub fn new() -> Self {
-        ReadState {
-            buffer: [0u8; BUFFER_SIZE],
-            bytes_filled: 0,
-            position: 0,
-            wanted_string_length: None,
-            wanted_strings_amount: None,
-            current_message: Vec::<(usize, usize)>::new(),
-            current_message_start: 0,
-            current_message_bytes_length: 0,
-        }
     }
 }
 
@@ -445,7 +448,7 @@ mod tests {
         ];
 
         for test in tests {
-            let result = Connection::try_extract_string(&test.string, test.offset);
+            let result = ReadState::try_extract_string(&test.string, test.offset);
             assert_eq!(
                 test.expected, result,
                 "for test: {:?}\nexpecetd: {:?}\ngot: {:?}",
@@ -529,7 +532,7 @@ mod tests {
 
         for test in tests {
             put_new_message_in_read_buffer(&mut test_connection, test.message);
-            let result = test_connection.try_extract_new_message();
+            let result = test_connection.read_state.try_extract_new_message();
             let result_string = match result {
                 true => test_connection
                     .read_state
@@ -650,7 +653,7 @@ mod tests {
 
             for message in test.messages {
                 append_to_read_buffer(&mut test_connection, message);
-                test_connection.try_extract_message();
+                test_connection.read_state.try_extract_message();
             }
 
             assert_eq!(
@@ -798,7 +801,7 @@ mod tests {
                     &mut test.message_buffer,
                 );
 
-                let result = test_connection.try_extract_message();
+                let result = test_connection.read_state.try_extract_message();
 
                 if result == true {
                     string_indices_copy = test_connection.read_state.current_message.clone();
