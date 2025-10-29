@@ -12,6 +12,7 @@ use crate::{
 const HEADER_SIZE: usize = 4;
 const BUFFER_SIZE: usize = HEADER_SIZE + MAX_MESSAGE_SIZE;
 
+#[derive(Debug)]
 pub enum ConnectionError {
     WriteBufferOverflow,
 }

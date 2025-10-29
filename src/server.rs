@@ -121,7 +121,7 @@ impl Server {
     }
 
     fn handle_command(&mut self, command: RedisCommand, write_state: &mut WriteState) -> bool {
-         
+        true         
     }
 
     // fn handle_connection_action(
