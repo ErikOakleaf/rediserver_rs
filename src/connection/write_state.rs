@@ -1,4 +1,4 @@
-use crate::connection::BUFFER_SIZE;
+use crate::connection::{ConnectionError, BUFFER_SIZE};
 
 pub struct WriteState {
     pub buffer: [u8; BUFFER_SIZE],
@@ -14,4 +14,6 @@ impl WriteState {
             bytes_written: 0,
         }
     }
+
+    pub fn append_bytes(&mut self) -> Result<(), ConnectionError>
 }

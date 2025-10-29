@@ -2,7 +2,8 @@ use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
-    connection::{Connection, ConnectionAction},
+    commands::RedisCommand,
+    connection::{Connection, WriteState},
     error::RedisError,
     net::{Epoll, Socket, make_ipv4_address},
 };
@@ -67,27 +68,33 @@ impl Server {
             self.accept_new_connections()?;
         }
 
-        let connection = match &mut self.connections[fd as usize] {
+        let mut connection = match self.connections[fd as usize].take() {
             Some(connection) => connection,
             None => return Ok(()), // TODO - this should probably return some sort of error since
                                    // there is not a connection to a socket that is till there
         };
 
         if (flags & EPOLLIN as u32) != 0 {
-            Self::handle_connection_action(
-                &mut self.epoll,
-                fd as c_int,
-                connection.handle_readable()?,
-            )?;
+            connection.fill_read_buffer()?;
+
+            while let Some(commands) = connection.read_state.get_commands()? {
+                for command in commands {
+                    self.handle_command(command, &mut connection.write_state);
+                }
+            }
+
+            // here clear the read buffer if it does not want anything from partial reads that means it
+            // either should have nothing or is complete with all messages in this itteration
+
+            // try to do all writes here if one can if non sucessful then we would start polling for out
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
-            Self::handle_connection_action(
-                &mut self.epoll,
-                fd as c_int,
-                connection.handle_writeable()?,
-            )?;
+            // handle writeable socket here
         }
+
+        // put the connection back in where it was taken from
+        self.connections[fd as usize] = Some(connection);
 
         Ok(())
     }
@@ -113,24 +120,28 @@ impl Server {
         Ok(())
     }
 
-    fn handle_connection_action(
-        epoll: &mut Epoll,
-        connection_fd: c_int,
-        connection_action: ConnectionAction,
-    ) -> Result<(), RedisError> {
-        match connection_action {
-            ConnectionAction::WantRead => {
-                epoll.modify(connection_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
-            }
-            ConnectionAction::WantWrite => {
-                epoll.modify(connection_fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
-            }
-            ConnectionAction::End => {}
-            ConnectionAction::None => {}
-        };
-
-        Ok(())
+    fn handle_command(&mut self, command: RedisCommand, write_state: &mut WriteState) -> bool {
+         
     }
+
+    // fn handle_connection_action(
+    //     epoll: &mut Epoll,
+    //     connection_fd: c_int,
+    //     connection_action: ConnectionAction,
+    // ) -> Result<(), RedisError> {
+    //     match connection_action {
+    //         ConnectionAction::WantRead => {
+    //             epoll.modify(connection_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+    //         }
+    //         ConnectionAction::WantWrite => {
+    //             epoll.modify(connection_fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
+    //         }
+    //         ConnectionAction::End => {}
+    //         ConnectionAction::None => {}
+    //     };
+    //
+    //     Ok(())
+    // }
 
     // Helpers
 

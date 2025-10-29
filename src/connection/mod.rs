@@ -1,8 +1,8 @@
 mod read_state;
 mod write_state;
 
-use read_state::ReadState;
-use write_state::WriteState;
+pub use read_state::ReadState;
+pub use write_state::WriteState;
 
 use crate::{
     error::{MAX_MESSAGE_SIZE, RedisError},
@@ -12,18 +12,8 @@ use crate::{
 const HEADER_SIZE: usize = 4;
 const BUFFER_SIZE: usize = HEADER_SIZE + MAX_MESSAGE_SIZE;
 
-pub enum ConnectionAction {
-    None,
-    WantRead,
-    WantWrite,
-    End,
-}
-
-#[derive(Debug, PartialEq)]
-enum StringExtractionResult {
-    Complete((usize, usize), usize),
-    Partial(usize),
-    None,
+pub enum ConnectionError {
+    WriteBufferOverflow,
 }
 
 pub struct Connection {
@@ -41,30 +31,7 @@ impl Connection {
         }
     }
 
-    pub fn handle_readable(&mut self) -> Result<ConnectionAction, RedisError> {
-        Ok(ConnectionAction::None)
-        // self.fill_read_buffer()?;
-        // loop {
-        //     let message_extraction_result = self.try_extract_message();
-        //
-        //     if message_extraction_result == false {
-        //         return Ok(ConnectionAction::None);
-        //     }
-        //
-        //     match self.handle_message() {
-        //         ConnectionAction::WantWrite => return Ok(ConnectionAction::WantWrite),
-        //         _ => {}
-        //     };
-        //
-        //     if self.read_state.position == self.read_state.bytes_filled {
-        //         break;
-        //     }
-        // }
-        //
-        // Ok(ConnectionAction::None);
-    }
-
-    fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
+    pub fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
         let read_result = self
             .socket
             .read(&mut self.read_state.buffer[self.read_state.bytes_filled..])?;
@@ -78,11 +45,6 @@ impl Connection {
     }
 
     // handling of messages
-    fn handle_message(&mut self) {}
-
-    pub fn handle_writeable(&mut self) -> Result<ConnectionAction, RedisError> {
-        self.try_write_after_writable()
-    }
 
     fn prepare_response(&mut self, response: &[u8]) {
         self.write_state.buffer[..HEADER_SIZE]
@@ -102,22 +64,6 @@ impl Connection {
             Ok(true)
         } else {
             Ok(false)
-        }
-    }
-
-    fn try_write_after_read(&mut self) -> Result<ConnectionAction, RedisError> {
-        if self.flush_write_buffer()? {
-            Ok(ConnectionAction::None)
-        } else {
-            Ok(ConnectionAction::WantWrite)
-        }
-    }
-
-    fn try_write_after_writable(&mut self) -> Result<ConnectionAction, RedisError> {
-        if self.flush_write_buffer()? {
-            Ok(ConnectionAction::WantRead)
-        } else {
-            Ok(ConnectionAction::None)
         }
     }
 }

@@ -1,4 +1,8 @@
-use crate::connection::{BUFFER_SIZE, HEADER_SIZE};
+use crate::{
+    commands::RedisCommand,
+    connection::{BUFFER_SIZE, HEADER_SIZE},
+    error::RedisError,
+};
 
 #[derive(Debug, PartialEq)]
 enum StringExtractionResult {
@@ -32,7 +36,7 @@ impl ReadState {
         }
     }
 
-    fn try_extract_message(&mut self) -> bool {
+    pub fn try_extract_message(&mut self) -> bool {
         if let Some(wanted_length) = self.wanted_string_length {
             let result = self.try_extract_partial_string(wanted_length);
 
@@ -167,6 +171,65 @@ impl ReadState {
         return false;
     }
 
+    pub fn get_commands<'a>(&'a mut self) -> Result<Option<Vec<RedisCommand<'a>>>, RedisError> {
+        let result = self.try_extract_message();
+        if result {
+            Ok(Some(Self::parse_message(
+                &self.current_message,
+                &self.buffer,
+            )?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_message<'a>(
+        message: &[(usize, usize)],
+        buffer: &'a [u8],
+    ) -> Result<Vec<RedisCommand<'a>>, RedisError> {
+        let mut commands = Vec::<RedisCommand>::new();
+        let mut strings_consumed = 0;
+
+        while strings_consumed < message.len() {
+            let (command, amount_strings_consumed) =
+                Self::parse_command(&message[strings_consumed..], buffer)?;
+            commands.push(command);
+            strings_consumed += amount_strings_consumed;
+        }
+
+        Ok(commands)
+    }
+
+    fn parse_command<'a>(
+        message: &[(usize, usize)],
+        buffer: &'a [u8],
+    ) -> Result<(RedisCommand<'a>, usize), RedisError> {
+        let slice = |(start, end): (usize, usize)| &buffer[start..end];
+        let cmd = slice(message[0]);
+
+        match cmd {
+            b"GET" | b"get" | b"Get" => {
+                Self::check_arity_error(2, message.len(), cmd)?;
+                let key = slice(message[1]);
+                Ok((RedisCommand::Get { key }, 2))
+            }
+            b"DEL" | b"del" | b"Del" => {
+                Self::check_arity_error(2, message.len(), cmd)?;
+                let key = slice(message[1]);
+                Ok((RedisCommand::Del { key }, 2))
+            }
+            b"SET" | b"set" | b"Set" => {
+                Self::check_arity_error(3, message.len(), cmd)?;
+                let key = slice(message[1]);
+                let value = slice(message[2]);
+                Ok((RedisCommand::Set { key, value }, 3))
+            }
+            _ => Err(RedisError::UnknownCommand(
+                String::from_utf8_lossy(cmd).to_string(),
+            )),
+        }
+    }
+
     // Helpers
 
     #[inline(always)]
@@ -243,6 +306,20 @@ impl ReadState {
             *start -= keep_from;
             *end -= keep_from;
         });
+    }
+
+    #[inline(always)]
+    fn check_arity_error(
+        expected_length: usize,
+        message_length: usize,
+        cmd: &[u8],
+    ) -> Result<(), RedisError> {
+        if message_length < expected_length {
+            return Err(RedisError::WrongArity(
+                String::from_utf8_lossy(cmd).to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -500,7 +577,6 @@ mod tests {
             },
         ];
 
-
         let mut read_state = ReadState::new();
         for test in tests {
             reset_read_buffer(&mut read_state);
@@ -678,6 +754,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_parse_message_to_command() -> Result<(), RedisError> {
+        struct TestData<'a> {
+            buffer: &'static [u8],
+            message: Vec<(usize, usize)>,
+            expected_commands: Vec<RedisCommand<'a>>,
+        }
+
+        let tests = vec![
+            TestData {
+                buffer: b"\x00\x00\x00\x03\x00\x00\x00\x03GET\x00\x00\x00\x05hello",
+                message: vec![(8, 11), (15, 20)],
+                expected_commands: vec![RedisCommand::Get { key: b"hello" }],
+            },
+            TestData {
+                buffer: b"\x00\x00\x00\x03\x00\x00\x00\x03DEL\x00\x00\x00\x05world",
+                message: vec![(8, 11), (15, 20)],
+                expected_commands: vec![RedisCommand::Del { key: b"world" }],
+            },
+            TestData {
+                buffer:
+                    b"\x00\x00\x00\x03\x00\x00\x00\x03SET\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                message: vec![(8, 11), (15, 20), (24, 29)],
+                expected_commands: vec![RedisCommand::Set {
+                    key: b"hello",
+                    value: b"world",
+                }],
+            },
+            TestData {
+                buffer: b"\x00\x00\x00\x06\x00\x00\x00\x03GET\x00\x00\x00\x05hello\x00\x00\x00\x03DEL\x00\x00\x00\x05world\x00\x00\x00\x03SET\x00\x00\x00\x05hello\x00\x00\x00\x05world",
+                message: vec![(8, 11), (15, 20), (24, 27), (31, 36), (40, 43), (47, 52), (56, 61)],
+                expected_commands: vec![RedisCommand::Get { key: b"hello" }, RedisCommand::Del { key: b"world" }, RedisCommand::Set {
+                    key: b"hello",
+                    value: b"world",
+                }],
+            },
+        ];
+
+        for test in tests {
+            let result = ReadState::parse_message(&test.message, test.buffer)?;
+            assert_eq!(
+                test.expected_commands, result,
+                "expected commands: {:?}\ngot: {:?}",
+                test.expected_commands, result
+            );
+        }
+
+        Ok(())
     }
 
     // Test helpers
