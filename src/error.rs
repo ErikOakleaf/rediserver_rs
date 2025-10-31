@@ -7,9 +7,10 @@ pub enum RedisError {
     Io(io::Error),
     ProtocolError(ProtocolError),
     ConnectionClosed,
-    UnknownCommand(String),
-    WrongArity(String),
+    ConnectionError(ConnectionError),
 }
+
+
 
 impl From<io::Error> for RedisError {
     fn from(err: io::Error) -> Self {
@@ -23,8 +24,26 @@ impl From<ProtocolError> for RedisError {
     }
 }
 
+impl From<ConnectionError> for RedisError {
+    fn from(err: ConnectionError) -> Self {
+        RedisError::ConnectionError(err)
+    }
+}
+
+#[derive(Debug)]
+pub enum RedisCommandError {
+    KeyNotFound,
+    UnknownCommand(Box<[u8]>),
+    WrongArity(String)
+}
+
 #[derive(Debug)]
 pub enum ProtocolError {
     MessageTooLong(usize),
     InvalidRequest,
+}
+
+#[derive(Debug)]
+pub enum ConnectionError {
+    WriteBufferOverflow,
 }

@@ -1,7 +1,7 @@
 use crate::{
     commands::RedisCommand,
     connection::{BUFFER_SIZE, HEADER_SIZE},
-    error::RedisError,
+    error::{RedisCommandError, RedisError},
 };
 
 #[derive(Debug, PartialEq)]
@@ -171,7 +171,9 @@ impl ReadState {
         return false;
     }
 
-    pub fn get_commands<'a>(&'a mut self) -> Result<Option<Vec<RedisCommand<'a>>>, RedisError> {
+    pub fn get_commands<'a>(
+        &'a mut self,
+    ) -> Result<Option<Vec<RedisCommand<'a>>>, RedisCommandError> {
         let result = self.try_extract_message();
         if result {
             Ok(Some(Self::parse_message(
@@ -186,7 +188,7 @@ impl ReadState {
     fn parse_message<'a>(
         message: &[(usize, usize)],
         buffer: &'a [u8],
-    ) -> Result<Vec<RedisCommand<'a>>, RedisError> {
+    ) -> Result<Vec<RedisCommand<'a>>, RedisCommandError> {
         let mut commands = Vec::<RedisCommand>::new();
         let mut strings_consumed = 0;
 
@@ -203,7 +205,7 @@ impl ReadState {
     fn parse_command<'a>(
         message: &[(usize, usize)],
         buffer: &'a [u8],
-    ) -> Result<(RedisCommand<'a>, usize), RedisError> {
+    ) -> Result<(RedisCommand<'a>, usize), RedisCommandError> {
         let slice = |(start, end): (usize, usize)| &buffer[start..end];
         let cmd = slice(message[0]);
 
@@ -224,9 +226,19 @@ impl ReadState {
                 let value = slice(message[2]);
                 Ok((RedisCommand::Set { key, value }, 3))
             }
-            _ => Err(RedisError::UnknownCommand(
-                String::from_utf8_lossy(cmd).to_string(),
+            _ => Err(RedisCommandError::UnknownCommand(
+                cmd.to_vec().into_boxed_slice(),
             )),
+        }
+    }
+
+    pub fn reset_if_empty(&mut self) {
+        if self.position == self.bytes_filled
+            && self.wanted_string_length.is_none()
+            && self.wanted_strings_amount.is_none()
+        {
+            self.position = 0;
+            self.bytes_filled = 0;
         }
     }
 
@@ -313,9 +325,9 @@ impl ReadState {
         expected_length: usize,
         message_length: usize,
         cmd: &[u8],
-    ) -> Result<(), RedisError> {
+    ) -> Result<(), RedisCommandError> {
         if message_length < expected_length {
-            return Err(RedisError::WrongArity(
+            return Err(RedisCommandError::WrongArity(
                 String::from_utf8_lossy(cmd).to_string(),
             ));
         }
@@ -757,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_message_to_command() -> Result<(), RedisError> {
+    fn test_parse_message_to_command() -> Result<(), RedisCommandError> {
         struct TestData<'a> {
             buffer: &'static [u8],
             message: Vec<(usize, usize)>,

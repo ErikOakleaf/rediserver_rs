@@ -1,4 +1,5 @@
-use crate::connection::{BUFFER_SIZE, ConnectionError};
+use crate::connection::BUFFER_SIZE;
+use crate::error::ConnectionError;
 
 pub struct WriteState {
     pub buffer: [u8; BUFFER_SIZE],
@@ -41,6 +42,23 @@ impl WriteState {
         self.buffer[data_start..data_start + data.len()].copy_from_slice(data);
 
         self.size += total_len;
+
+        Ok(())
+    }
+
+    pub fn append_amount_responses_header(
+        &mut self,
+        amount_responses: u32,
+    ) -> Result<(), ConnectionError> {
+        const AMOUNT_BYTES: usize = 4;
+
+        if self.size + AMOUNT_BYTES > BUFFER_SIZE {
+            return Err(ConnectionError::WriteBufferOverflow);
+        }
+
+        let amount_responses_bytes = amount_responses.to_be_bytes();
+        self.buffer[self.size..self.size + AMOUNT_BYTES].copy_from_slice(&amount_responses_bytes);
+        self.size += AMOUNT_BYTES;
 
         Ok(())
     }

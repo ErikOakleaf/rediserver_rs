@@ -3,8 +3,8 @@ use std::io;
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
     commands::RedisCommand,
-    connection::{Connection, WriteState},
-    error::RedisError,
+    connection::Connection,
+    error::{RedisCommandError, RedisError},
     net::{Epoll, Socket, make_ipv4_address},
 };
 
@@ -76,21 +76,11 @@ impl Server {
 
         if (flags & EPOLLIN as u32) != 0 {
             connection.fill_read_buffer()?;
-
-            while let Some(commands) = connection.read_state.get_commands()? {
-                for command in commands {
-                    self.handle_command(command, &mut connection.write_state);
-                }
-            }
-
-            // here clear the read buffer if it does not want anything from partial reads that means it
-            // either should have nothing or is complete with all messages in this itteration
-
-            // try to do all writes here if one can if non sucessful then we would start polling for out
+            self.handle_readable(&mut connection)?;
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
-            // handle writeable socket here
+            self.handle_writeable(&mut connection)?;
         }
 
         // put the connection back in where it was taken from
@@ -105,8 +95,10 @@ impl Server {
                 Ok((client_socket, _address)) => {
                     let client_fd = client_socket.fd;
                     client_socket.set_non_blocking()?;
+
                     self.epoll
                         .add(client_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
+
                     let connection = Connection::new(client_socket);
                     self.connections[client_fd as usize] = Some(connection);
                 }
@@ -120,34 +112,112 @@ impl Server {
         Ok(())
     }
 
-    fn handle_command(&mut self, command: RedisCommand, write_state: &mut WriteState) -> bool {
-        true         
+    // TODO - modularize this function later split it into more functions
+    fn handle_readable(&mut self, connection: &mut Connection) -> Result<(), RedisError> {
+        loop {
+            match connection.read_state.get_commands() {
+                Ok(Some(commands)) => {
+                    connection
+                        .write_state
+                        .append_amount_responses_header(commands.len() as u32)?;
+
+                    for command in commands {
+                        let result = self.handle_command(command);
+
+                        match result {
+                            Ok(_) => {
+                                connection.write_state.append_bytes(0, &[])?;
+                            }
+                            Err(err) => {
+                                let status_code = match err {
+                                    RedisCommandError::KeyNotFound => 1,
+                                    _ => 1, // There should possibly be more errors here in the
+                                            // future right now this does not make that much sense
+                                };
+                                connection.write_state.append_bytes(status_code, &[])?;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    connection.write_state.append_amount_responses_header(1)?;
+
+                    match err {
+                        RedisCommandError::UnknownCommand(cmd) => {
+                            connection.write_state.append_bytes(1, &cmd)?;
+                        }
+                        RedisCommandError::WrongArity(_) => {
+                            connection.write_state.append_bytes(1, b"wrong arity")?; // TODO add
+                            // the command that has the wrong arity here as well
+                        }
+                        _ => {
+                            unreachable!(
+                                "this should be unreachable other errors should be detected elsewhere"
+                            );
+                        }
+                    };
+
+                    break;
+                }
+            }
+        }
+
+        connection.read_state.reset_if_empty();
+
+        let write_result = connection.flush_write_buffer()?;
+
+        if write_result == false {
+            Self::poll_socket_out(&self.epoll, connection.socket.fd)?;
+        }
+
+        Ok(())
     }
 
-    // fn handle_connection_action(
-    //     epoll: &mut Epoll,
-    //     connection_fd: c_int,
-    //     connection_action: ConnectionAction,
-    // ) -> Result<(), RedisError> {
-    //     match connection_action {
-    //         ConnectionAction::WantRead => {
-    //             epoll.modify(connection_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
-    //         }
-    //         ConnectionAction::WantWrite => {
-    //             epoll.modify(connection_fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)?;
-    //         }
-    //         ConnectionAction::End => {}
-    //         ConnectionAction::None => {}
-    //     };
-    //
-    //     Ok(())
-    // }
+    fn handle_command(&mut self, command: RedisCommand) -> Result<(), RedisCommandError> {
+        match command {
+            RedisCommand::Get { key } => self.get(key),
+            RedisCommand::Del { key } => self.del(key),
+            RedisCommand::Set { key, value } => self.set(key, value),
+        }
+    }
+
+    // for now these return just whatever since there is no actual things to mutate right now
+    fn get(&mut self, key: &[u8]) -> Result<(), RedisCommandError> {
+        Err(RedisCommandError::KeyNotFound)
+    }
+
+    fn del(&mut self, key: &[u8]) -> Result<(), RedisCommandError> {
+        Err(RedisCommandError::KeyNotFound)
+    }
+
+    fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), RedisCommandError> {
+        Ok(())
+    }
+
+    fn handle_writeable(&mut self, connection: &mut Connection) -> Result<(), RedisError> {
+        let write_result = connection.flush_write_buffer()?;
+
+        if write_result == true {
+            Self::poll_socket_in(&self.epoll, connection.socket.fd)?;
+        }
+
+        Ok(())
+    }
 
     // Helpers
 
     fn get_events(&mut self) -> Result<usize, RedisError> {
         let amount_events = self.epoll.wait(&mut self.events, -1)?;
         Ok(amount_events)
+    }
+
+    fn poll_socket_in(epoll: &Epoll, connection_fd: c_int) -> io::Result<()> {
+        epoll.modify(connection_fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)
+    }
+
+    fn poll_socket_out(epoll: &Epoll, connection_fd: c_int) -> io::Result<()> {
+        epoll.modify(connection_fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)
     }
 }
 
@@ -157,4 +227,15 @@ fn main() -> Result<(), RedisError> {
     server.handle_events()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_handle_readable() -> Result<(), RedisError> {
+
+        Ok(())
+    }
 }

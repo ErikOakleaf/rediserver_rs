@@ -12,10 +12,6 @@ use crate::{
 const HEADER_SIZE: usize = 4;
 const BUFFER_SIZE: usize = HEADER_SIZE + MAX_MESSAGE_SIZE;
 
-#[derive(Debug)]
-pub enum ConnectionError {
-    WriteBufferOverflow,
-}
 
 pub struct Connection {
     pub socket: Socket,
@@ -45,17 +41,8 @@ impl Connection {
         Ok(())
     }
 
-    // handling of messages
 
-    fn prepare_response(&mut self, response: &[u8]) {
-        self.write_state.buffer[..HEADER_SIZE]
-            .copy_from_slice(&(response.len() as u32).to_be_bytes());
-        self.write_state.buffer[HEADER_SIZE..HEADER_SIZE + response.len()]
-            .copy_from_slice(response);
-        self.write_state.size = response.len() + HEADER_SIZE;
-    }
-
-    fn flush_write_buffer(&mut self) -> Result<bool, RedisError> {
+    pub fn flush_write_buffer(&mut self) -> Result<bool, RedisError> {
         let ws = &mut self.write_state;
         ws.bytes_written += self.socket.write(&ws.buffer[ws.bytes_written..ws.size])?;
 
