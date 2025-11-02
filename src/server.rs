@@ -2,9 +2,8 @@ use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
-    commands::RedisCommand,
-    connection::{Connection, ReadState, WriteState},
-    error::{RedisCommandError, RedisError},
+    connection::Connection,
+    error::RedisError,
     net::{Epoll, Socket, make_ipv4_address},
 };
 

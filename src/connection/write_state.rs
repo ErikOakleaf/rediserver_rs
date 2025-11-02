@@ -1,19 +1,15 @@
-use crate::connection::BUFFER_SIZE;
-use crate::error::ConnectionError;
+use crate::connection::INIT_BUFFER_SIZE;
 
 pub struct WriteState {
-    pub buffer: [u8; BUFFER_SIZE],
-    pub size: usize,
-    pub bytes_written: usize,
+    pub buffer: Vec<u8>,
+    pub write_position: usize,
 }
 
 impl WriteState {
     pub fn new() -> Self {
         WriteState {
-            buffer: [0u8; BUFFER_SIZE],
-            size: 0,
-            bytes_written: 0,
+            buffer: Vec::<u8>::with_capacity(INIT_BUFFER_SIZE),
+            write_position: 0,
         }
     }
-
 }
