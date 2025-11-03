@@ -39,8 +39,7 @@ pub enum RedisCommandError {
 pub enum ProtocolError {
     ExpectedByte { expected: u8, got: u8 },
     UnexpectedByte(u8),
-    MessageTooLong(usize),
-    InvalidRequest,
+    Incomplete,
     Other(String),
 }
 
