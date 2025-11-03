@@ -1,29 +1,102 @@
 use crate::error::ProtocolError;
 
-fn parse_number_to_usize(buf: &[u8], pos: &mut usize) -> Result<usize, ProtocolError> {
-    let mut num = 0;
+pub enum ParseState {
+    Empty,
+    Partial,
+    Complete,
+}
 
-    loop {
-        let byte = consume(buf, pos)?;
+pub struct CommandParseState<'a> {
+    command_name: Option<&'a [u8]>,
+    args: Vec<&'a [u8]>,
+    expected_args: usize,
+    current_arg: usize,
+    state: ParseState,
+}
 
-        if check_crlf_peek(buf, pos, byte)? {
-            return Ok(num);
+impl<'a> CommandParseState<'a> {
+    pub fn new() -> CommandParseState<'a> {
+        CommandParseState {
+            command_name: None,
+            args: Vec::<&'a [u8]>::new(),
+            expected_args: 0,
+            current_arg: 0,
+            state: ParseState::Empty,
         }
+    }
 
-        if !byte.is_ascii_digit() {
-            return Err(ProtocolError::UnexpectedByte(byte));
-        }
-
-        num = (num * 10) + ((byte - b'0') as usize);
+    pub fn clear(command_parse_state: &mut CommandParseState) {
+        command_parse_state.command_name = None;
+        command_parse_state.args.clear();
+        command_parse_state.expected_args = 0;
+        command_parse_state.current_arg = 0;
+        command_parse_state.state = ParseState::Empty;
     }
 }
 
+fn parse_command<'a>(
+    buf: &'a [u8],
+    pos: &mut usize,
+    command_parse_state: &'a mut CommandParseState<'a>,
+) -> Result<(), ProtocolError> {
+    command_parse_state.state = ParseState::Partial;
+
+    let amount_strings = parse_array_header(buf, pos)?;
+
+    let command = parse_bulk_string(buf, pos)?;
+    let amount_arguments = get_command_arguments_amount(command)?;
+
+    if amount_strings - 1 != amount_arguments {
+        return Err(ProtocolError::WrongNumberOfArguments);
+    }
+
+    command_parse_state.command_name = Some(command);
+    command_parse_state.expected_args = amount_arguments;
+
+    for _ in 0..amount_strings - 1 {
+        let argument = parse_bulk_string(buf, pos)?;
+        command_parse_state.args.push(argument);
+    }
+
+    command_parse_state.state = ParseState::Complete;
+    Ok(())
+}
+
+fn parse_array_header(buf: &[u8], pos: &mut usize) -> Result<usize, ProtocolError> {
+    let start = *pos;
+    expect(buf, pos, b'*')?;
+    let array_len = match parse_number_to_usize(buf, pos) {
+        Ok(len) => len,
+        Err(ProtocolError::Incomplete) => {
+            *pos = start;
+            return Err(ProtocolError::Incomplete);
+        }
+        Err(e) => return Err(e),
+    };
+
+    if *pos + array_len + 2 > buf.len() {
+        *pos = start;
+        return Err(ProtocolError::Incomplete); // partial read
+    }
+
+    Ok(array_len)
+}
+
 fn parse_bulk_string<'a>(buf: &'a [u8], pos: &mut usize) -> Result<&'a [u8], ProtocolError> {
+    let start = *pos;
     expect(buf, pos, b'$')?;
 
-    let string_len = parse_number_to_usize(buf, pos)?;
+    let string_len = match parse_number_to_usize(buf, pos) {
+        Ok(len) => len,
+        Err(ProtocolError::Incomplete) => {
+            *pos = start;
+            return Err(ProtocolError::Incomplete);
+        }
+        Err(e) => return Err(e),
+    };
 
     if *pos + string_len + 2 > buf.len() {
+        *pos = start;
         return Err(ProtocolError::Incomplete); // partial read
     }
 
@@ -52,6 +125,24 @@ fn consume(buf: &[u8], pos: &mut usize) -> Result<u8, ProtocolError> {
     *pos += 1;
 
     Ok(byte)
+}
+
+fn parse_number_to_usize(buf: &[u8], pos: &mut usize) -> Result<usize, ProtocolError> {
+    let mut num = 0;
+
+    loop {
+        let byte = consume(buf, pos)?;
+
+        if check_crlf_peek(buf, pos, byte)? {
+            return Ok(num);
+        }
+
+        if !byte.is_ascii_digit() {
+            return Err(ProtocolError::UnexpectedByte(byte));
+        }
+
+        num = (num * 10) + ((byte - b'0') as usize);
+    }
 }
 
 fn expect(buf: &[u8], pos: &mut usize, expected_byte: u8) -> Result<(), ProtocolError> {
@@ -88,6 +179,18 @@ fn check_crlf_peek(buf: &[u8], pos: &mut usize, byte: u8) -> Result<bool, Protoc
     }
 
     Ok(false)
+}
+
+#[inline(always)]
+fn get_command_arguments_amount(command: &[u8]) -> Result<usize, ProtocolError> {
+    match command {
+        b"GET" | b"get" | b"Get" => Ok(1),
+        b"DEL" | b"del" | b"Del" => Ok(1),
+        b"SET" | b"set" | b"Set" => Ok(2),
+        _ => Err(ProtocolError::UnkownCommand(
+            str::from_utf8(command).unwrap().to_string(),
+        )),
+    }
 }
 
 #[cfg(test)]
