@@ -51,11 +51,7 @@ fn parse_command(
 
     command_parse_state.command_name = Some(command.to_vec());
 
-    for _ in 0..amount_strings - 1 {
-        let argument = parse_bulk_string(buf, pos)?;
-        command_parse_state.current_string += 1;
-        command_parse_state.args.push(argument.to_vec());
-    }
+    parse_arguments(buf, pos, command_parse_state, amount_strings - 1)?;
 
     command_parse_state.state = ParseState::Complete;
     Ok(())
@@ -74,13 +70,25 @@ fn parse_partial_command(
 
     let amount_strings = command_parse_state.expected_strings - command_parse_state.current_string;
 
+    parse_arguments(buf, pos, command_parse_state, amount_strings)?;
+
+    command_parse_state.state = ParseState::Complete;
+    Ok(())
+}
+
+#[inline]
+fn parse_arguments(
+    buf: &[u8],
+    pos: &mut usize,
+    command_parse_state: &mut CommandParseState,
+    amount_strings: usize,
+) -> Result<(), ProtocolError> {
     for _ in 0..amount_strings {
         let argument = parse_bulk_string(buf, pos)?;
         command_parse_state.current_string += 1;
         command_parse_state.args.push(argument.to_vec());
     }
 
-    command_parse_state.state = ParseState::Complete;
     Ok(())
 }
 
