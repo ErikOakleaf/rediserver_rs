@@ -11,8 +11,8 @@ pub enum ParseState {
 pub struct CommandParseState {
     command_name: Option<Vec<u8>>, // change this to an enum later
     args: Vec<Vec<u8>>,
-    expected_args: usize,
-    current_arg: usize,
+    expected_strings: usize,
+    current_string: usize,
     state: ParseState,
 }
 
@@ -21,8 +21,8 @@ impl CommandParseState {
         CommandParseState {
             command_name: None,
             args: Vec::<Vec<u8>>::new(),
-            expected_args: 0,
-            current_arg: 0,
+            expected_strings: 0,
+            current_string: 0,
             state: ParseState::Empty,
         }
     }
@@ -30,8 +30,8 @@ impl CommandParseState {
     pub fn clear(command_parse_state: &mut CommandParseState) {
         command_parse_state.command_name = None;
         command_parse_state.args.clear();
-        command_parse_state.expected_args = 0;
-        command_parse_state.current_arg = 0;
+        command_parse_state.expected_strings = 0;
+        command_parse_state.current_string = 0;
         command_parse_state.state = ParseState::Empty;
     }
 }
@@ -42,22 +42,18 @@ fn parse_command(
     command_parse_state: &mut CommandParseState,
 ) -> Result<(), ProtocolError> {
     let amount_strings = parse_array_header(buf, pos)?;
-
-    let command = parse_bulk_string(buf, pos)?;
-    let amount_arguments = get_command_arguments_amount(command)?;
-
-    if amount_strings - 1 != amount_arguments {
-        return Err(ProtocolError::WrongNumberOfArguments);
-    }
-
-    command_parse_state.command_name = Some(command.to_vec());
-    command_parse_state.expected_args = amount_arguments;
+    command_parse_state.expected_strings = amount_strings;
 
     command_parse_state.state = ParseState::Partial;
 
+    let command = parse_bulk_string(buf, pos)?;
+    command_parse_state.current_string = 1;
+
+    command_parse_state.command_name = Some(command.to_vec());
+
     for _ in 0..amount_strings - 1 {
         let argument = parse_bulk_string(buf, pos)?;
-        command_parse_state.current_arg += 1;
+        command_parse_state.current_string += 1;
         command_parse_state.args.push(argument.to_vec());
     }
 
@@ -70,11 +66,17 @@ fn parse_partial_command(
     pos: &mut usize,
     command_parse_state: &mut CommandParseState,
 ) -> Result<(), ProtocolError> {
-    let amount_arguments = command_parse_state.expected_args - command_parse_state.current_arg;
+    if command_parse_state.command_name == None {
+        let command = parse_bulk_string(buf, pos)?;
+        command_parse_state.command_name = Some(command.to_vec());
+        command_parse_state.current_string += 1;
+    }
 
-    for _ in 0..amount_arguments {
+    let amount_strings = command_parse_state.expected_strings - command_parse_state.current_string;
+
+    for _ in 0..amount_strings {
         let argument = parse_bulk_string(buf, pos)?;
-        command_parse_state.current_arg += 1;
+        command_parse_state.current_string += 1;
         command_parse_state.args.push(argument.to_vec());
     }
 
@@ -199,18 +201,6 @@ fn check_crlf_peek(buf: &[u8], pos: &mut usize, byte: u8) -> Result<bool, Protoc
     }
 
     Ok(false)
-}
-
-#[inline(always)]
-fn get_command_arguments_amount(command: &[u8]) -> Result<usize, ProtocolError> {
-    match command {
-        b"GET" | b"get" | b"Get" => Ok(1),
-        b"DEL" | b"del" | b"Del" => Ok(1),
-        b"SET" | b"set" | b"Set" => Ok(2),
-        _ => Err(ProtocolError::UnkownCommand(
-            str::from_utf8(command).unwrap().to_string(),
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -376,8 +366,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"GET".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 1,
-                    current_arg: 1,
+                    expected_strings: 2,
+                    current_string: 2,
                     state: ParseState::Complete,
                 },
             },
@@ -387,8 +377,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"DEL".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 1,
-                    current_arg: 1,
+                    expected_strings: 2,
+                    current_string: 2,
                     state: ParseState::Complete,
                 },
             },
@@ -398,8 +388,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"SET".to_vec()),
                     args: vec![b"hello".to_vec(), b"world".to_vec()],
-                    expected_args: 2,
-                    current_arg: 2,
+                    expected_strings: 3,
+                    current_string: 3,
                     state: ParseState::Complete,
                 },
             },
@@ -409,8 +399,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"SET".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 2,
-                    current_arg: 1,
+                    expected_strings: 3,
+                    current_string: 2,
                     state: ParseState::Partial,
                 },
             },
@@ -442,8 +432,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"GET".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 1,
-                    current_arg: 1,
+                    expected_strings: 2,
+                    current_string: 2,
                     state: ParseState::Complete,
                 },
             },
@@ -453,8 +443,8 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"DEL".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 1,
-                    current_arg: 1,
+                    expected_strings: 2,
+                    current_string: 2,
                     state: ParseState::Complete,
                 },
             },
@@ -464,8 +454,76 @@ mod tests {
                 expected_state: CommandParseState {
                     command_name: Some(b"DEL".to_vec()),
                     args: vec![b"hello".to_vec()],
-                    expected_args: 1,
-                    current_arg: 1,
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: vec![
+                    b"*3\r\n$3\r\nSET",
+                    b"\r\n$",
+                    b"5\r\nhell",
+                    b"o\r\n$5\r\nworld\r",
+                    b"\n",
+                ],
+                expected_position: 35,
+                expected_state: CommandParseState {
+                    command_name: Some(b"SET".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: vec![
+                    b"*3\r\n$3\r\nSET",
+                    b"\r\n$",
+                    b"5\r\nhell",
+                    b"o\r\n$5\r\nworld\r",
+                    b"\n",
+                ],
+                expected_position: 35,
+                expected_state: CommandParseState {
+                    command_name: Some(b"SET".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: vec![
+                    b"*",
+                    b"3",
+                    b"\r\n$3\r\nSET",
+                    b"\r\n$",
+                    b"5\r\nhell",
+                    b"o\r\n$5\r\nworld\r",
+                    b"\n",
+                ],
+                expected_position: 35,
+                expected_state: CommandParseState {
+                    command_name: Some(b"SET".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: vec![
+                    b"*", b"3", b"\r", b"\n", b"$", b"3", b"\r", b"\n", b"S", b"E", b"T", b"\r",
+                    b"\n", b"$", b"5", b"\r", b"\n", b"h", b"e", b"l", b"l", b"o", b"\r", b"\n",
+                    b"$", b"5", b"\r", b"\n", b"w", b"o", b"r", b"l", b"d", b"\r", b"\n",
+                ],
+                expected_position: 35,
+                expected_state: CommandParseState {
+                    command_name: Some(b"SET".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
                     state: ParseState::Complete,
                 },
             },
@@ -476,13 +534,15 @@ mod tests {
             let mut position = 0;
 
             let mut test_buffer = Vec::<u8>::new();
-            test_buffer.extend_from_slice(test.buffer[0]);
-            let _ = parse_command(&test_buffer, &mut position, &mut parse_state);
 
-            for i in 1..test.buffer.len() {
-                test_buffer.extend_from_slice(test.buffer[i]);
+            for string in test.buffer {
+                test_buffer.extend_from_slice(string);
 
-                let _ = parse_partial_command(&test_buffer, &mut position, &mut parse_state);
+                if parse_state.state == ParseState::Empty {
+                    let _ = parse_command(&test_buffer, &mut position, &mut parse_state);
+                } else {
+                    let _ = parse_partial_command(&test_buffer, &mut position, &mut parse_state);
+                }
             }
 
             assert_eq!(test.expected_position, position);
