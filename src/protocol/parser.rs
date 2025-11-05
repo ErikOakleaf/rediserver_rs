@@ -1,4 +1,4 @@
-use crate::error::ProtocolError;
+use crate::{commands::RedisCommand, error::ProtocolError};
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseState {
@@ -36,7 +36,7 @@ impl CommandParseState {
     }
 }
 
-fn parse_command(
+pub fn parse_command(
     buf: &[u8],
     pos: &mut usize,
     command_parse_state: &mut CommandParseState,
@@ -57,7 +57,7 @@ fn parse_command(
     Ok(())
 }
 
-fn parse_partial_command(
+pub fn parse_partial_command(
     buf: &[u8],
     pos: &mut usize,
     command_parse_state: &mut CommandParseState,
@@ -209,6 +209,53 @@ fn check_crlf_peek(buf: &[u8], pos: &mut usize, byte: u8) -> Result<bool, Protoc
     }
 
     Ok(false)
+}
+
+// Conversion
+
+fn convert_command_parse_state_to_redis_command<'a>(
+    command_parse_state: &'a CommandParseState,
+) -> Result<RedisCommand<'a>, ProtocolError> {
+    let command_name = match &command_parse_state.command_name {
+        Some(command_name) => command_name,
+        _ => unreachable!("SENT A COMMAND STATE WITHOUT A COMMAND"),
+    };
+
+    let args = &command_parse_state.args;
+
+    match command_name.as_slice() {
+        b"GET" | b"get" | b"Get" => {
+            check_arity_error(1, args.len())?;
+            Ok(RedisCommand::Get {
+                key: args[0].as_slice(),
+            })
+        }
+        b"DEL" | b"del" | b"Del" => {
+            check_arity_error(1, args.len())?;
+            Ok(RedisCommand::Del {
+                key: args[0].as_slice(),
+            })
+        }
+        b"SET" | b"set" | b"Set" => {
+            check_arity_error(2, args.len())?;
+            Ok(RedisCommand::Set {
+                key: args[0].as_slice(),
+                value: args[1].as_slice(),
+            })
+        }
+        _ => Err(ProtocolError::UnkownCommand(
+            str::from_utf8(command_name).unwrap().to_string(),
+        )),
+    }
+}
+
+#[inline(always)]
+fn check_arity_error(expected_len: usize, len: usize) -> Result<(), ProtocolError> {
+    if len != expected_len {
+        return Err(ProtocolError::WrongNumberOfArguments);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -555,6 +602,52 @@ mod tests {
 
             assert_eq!(test.expected_position, position);
             assert_eq!(test.expected_state, parse_state);
+        }
+    }
+
+    #[test]
+    fn test_convert_command_parse_state_to_command() {
+        struct TestData {
+            parse_state: CommandParseState,
+            expected_command: RedisCommand<'static>,
+        }
+
+        let tests = vec![
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"GET".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::Get { key: b"hello" },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"DEL".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::Del { key: b"hello" },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"SET".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::Set { key: b"hello", value: b"world" },
+            },
+        ];
+
+        for test in tests {
+            let command = convert_command_parse_state_to_redis_command(&test.parse_state).unwrap();
+            assert_eq!(test.expected_command, command);
         }
     }
 }

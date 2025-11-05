@@ -6,14 +6,14 @@ pub use write_state::WriteState;
 
 use crate::{
     error::{MAX_MESSAGE_SIZE, RedisError},
-    net::Socket,
+    net::Socket, protocol::parser::CommandParseState,
 };
 
 const INIT_BUFFER_SIZE: usize = 4096;
 
-
 pub struct Connection {
     pub socket: Socket,
+    pub command_parse_state: CommandParseState,
     pub read_buffer: ReadBuffer,
     pub write_state: WriteState,
 }
@@ -22,15 +22,14 @@ impl Connection {
     pub fn new(socket: Socket) -> Self {
         Connection {
             socket: socket,
+            command_parse_state: CommandParseState::new(),
             read_buffer: ReadBuffer::new(),
             write_state: WriteState::new(),
         }
     }
 
     pub fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
-        let read_result = self
-            .socket
-            .read(&mut self.read_buffer.buffer)?;
+        let read_result = self.socket.read(&mut self.read_buffer.buf)?;
 
         if read_result == 0 {
             return Ok(()); // TODO - this should maybe be an error or something
@@ -38,7 +37,6 @@ impl Connection {
 
         Ok(())
     }
-
 
     // pub fn flush_write_buffer(&mut self) -> Result<bool, RedisError> {
     //     let ws = &mut self.write_state;

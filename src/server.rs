@@ -4,7 +4,7 @@ use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
     connection::Connection,
     error::RedisError,
-    net::{Epoll, Socket, make_ipv4_address},
+    net::{Epoll, Socket, make_ipv4_address}, protocol::parser::parse_command,
 };
 
 const MAX_CONNECTIONS: usize = 1000;
@@ -75,6 +75,8 @@ impl Server {
 
         if (flags & EPOLLIN as u32) != 0 {
             // handle readable socket here
+            connection.fill_read_buffer()?;
+            parse_command(&connection.read_buffer.buf, &mut connection.read_buffer.pos, &mut connection.command_parse_state)?;
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
@@ -131,4 +133,3 @@ fn main() -> Result<(), RedisError> {
 
     Ok(())
 }
-

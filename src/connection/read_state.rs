@@ -1,17 +1,15 @@
-use crate::{commands::RedisCommand, connection::INIT_BUFFER_SIZE, error::ProtocolError};
+use crate::connection::INIT_BUFFER_SIZE;
 
 pub struct ReadBuffer {
-    pub buffer: Vec<u8>,
-    pub parse_position: usize,
-    pub command_start: usize,
+    pub buf: Vec<u8>,
+    pub pos: usize,
 }
 
 impl ReadBuffer {
     pub fn new() -> Self {
         ReadBuffer {
-            buffer: Vec::<u8>::with_capacity(INIT_BUFFER_SIZE),
-            parse_position: 0,
-            command_start: 0,
+            buf: Vec::<u8>::with_capacity(INIT_BUFFER_SIZE),
+            pos: 0,
         }
     }
 }
