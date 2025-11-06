@@ -2,14 +2,20 @@ use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
-    connection::Connection,
-    error::RedisError,
-    net::{Epoll, Socket, make_ipv4_address}, protocol::parser::parse_command,
+    connection::{Connection, WriteState},
+    error::{ProtocolError, RedisError},
+    net::{Epoll, Socket, make_ipv4_address},
+    protocol::parser::{
+        ParseState, convert_command_parse_state_to_redis_command, parse_command,
+        parse_partial_command,
+    },
+    redis::{Redis, RedisResult},
 };
 
 const MAX_CONNECTIONS: usize = 1000;
 
 struct Server {
+    redis: Redis,
     epoll: Epoll,
     listener: Socket,
     connections: Vec<Option<Connection>>,
@@ -18,6 +24,8 @@ struct Server {
 
 impl Server {
     fn new(ip: u32, port: u16) -> Result<Self, RedisError> {
+        let redis = Redis::new();
+
         let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
         connections.resize_with(MAX_CONNECTIONS, || None);
 
@@ -40,6 +48,7 @@ impl Server {
         epoll.add(listen_socket.fd, (EPOLLIN | EPOLLERR | EPOLLHUP) as u32)?;
 
         Ok(Server {
+            redis: redis,
             epoll: epoll,
             listener: listen_socket,
             connections: connections,
@@ -76,7 +85,45 @@ impl Server {
         if (flags & EPOLLIN as u32) != 0 {
             // handle readable socket here
             connection.fill_read_buffer()?;
-            parse_command(&connection.read_buffer.buf, &mut connection.read_buffer.pos, &mut connection.command_parse_state)?;
+            loop {
+                let return_value = match connection.command_parse_state.state {
+                    ParseState::Empty => parse_command(
+                        &connection.read_buffer.buf,
+                        &mut connection.read_buffer.pos,
+                        &mut connection.command_parse_state,
+                    ),
+                    ParseState::Partial => parse_partial_command(
+                        &connection.read_buffer.buf,
+                        &mut connection.read_buffer.pos,
+                        &mut connection.command_parse_state,
+                    ),
+                    _ => unreachable!("COMPLETE COMMAND SHOULD NOT BE ABLE TO REACH HERE"),
+                };
+
+                match return_value {
+                    Ok(_) => {
+                        let command = convert_command_parse_state_to_redis_command(
+                            &connection.command_parse_state,
+                        )?;
+                        let result = self.redis.execute_command(&command);
+                        Self::handle_redis_result(&result, &mut connection.write_state);
+                    }
+                    Err(ProtocolError::Incomplete) => {
+                        return Ok(());
+                    }
+                    Err(e) => return Err(RedisError::ProtocolError(e)), // this should not return error but handle the error
+                                                                        // some other way by skipping the message and report back to the client
+                }
+
+                connection.command_parse_state.clear();
+
+                if connection.read_buffer.pos >= connection.read_buffer.buf.len() {
+                    connection.read_buffer.clear();
+                    break;
+                }
+            }
+
+            Self::flush_write_buffer(&self.epoll, &connection.socket, &mut connection.write_state)?;
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
@@ -115,6 +162,35 @@ impl Server {
     fn get_events(&mut self) -> Result<usize, RedisError> {
         let amount_events = self.epoll.wait(&mut self.events, -1)?;
         Ok(amount_events)
+    }
+
+    fn handle_redis_result(result: &RedisResult, write_buffer: &mut WriteState) {
+        match result {
+            RedisResult::SimpleString(simple_string) => {
+                write_buffer.append_bytes(simple_string);
+            }
+            RedisResult::BulkString(bulk_string) => {
+                write_buffer.append_bytes(bulk_string.as_slice());
+            }
+            _ => unreachable!("FOR NOW YOU SHOULD NOT BE ABLE TO GET HERE"),
+        }
+    }
+
+    fn flush_write_buffer(
+        epoll: &Epoll,
+        soc: &Socket,
+        write_buffer: &mut WriteState,
+    ) -> Result<(), RedisError> {
+        let result = soc.write(write_buffer.buf.as_slice())?;
+        write_buffer.pos += result;
+
+        if write_buffer.pos != write_buffer.buf.len() {
+            Self::poll_socket_out(epoll, soc.fd)?;
+        } else {
+            write_buffer.clear();
+        }
+
+        Ok(())
     }
 
     fn poll_socket_in(epoll: &Epoll, connection_fd: c_int) -> io::Result<()> {

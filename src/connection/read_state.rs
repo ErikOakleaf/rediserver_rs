@@ -12,4 +12,9 @@ impl ReadBuffer {
             pos: 0,
         }
     }
+
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.pos = 0;
+    }
 }

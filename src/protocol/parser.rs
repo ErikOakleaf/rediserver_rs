@@ -13,7 +13,7 @@ pub struct CommandParseState {
     args: Vec<Vec<u8>>,
     expected_strings: usize,
     current_string: usize,
-    state: ParseState,
+    pub state: ParseState,
 }
 
 impl CommandParseState {
@@ -27,12 +27,12 @@ impl CommandParseState {
         }
     }
 
-    pub fn clear(command_parse_state: &mut CommandParseState) {
-        command_parse_state.command_name = None;
-        command_parse_state.args.clear();
-        command_parse_state.expected_strings = 0;
-        command_parse_state.current_string = 0;
-        command_parse_state.state = ParseState::Empty;
+    pub fn clear(&mut self) {
+        self.command_name = None;
+        self.args.clear();
+        self.expected_strings = 0;
+        self.current_string = 0;
+        self.state = ParseState::Empty;
     }
 }
 
@@ -213,7 +213,7 @@ fn check_crlf_peek(buf: &[u8], pos: &mut usize, byte: u8) -> Result<bool, Protoc
 
 // Conversion
 
-fn convert_command_parse_state_to_redis_command<'a>(
+pub fn convert_command_parse_state_to_redis_command<'a>(
     command_parse_state: &'a CommandParseState,
 ) -> Result<RedisCommand<'a>, ProtocolError> {
     let command_name = match &command_parse_state.command_name {
