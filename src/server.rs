@@ -121,6 +121,8 @@ impl Server {
                     connection.read_buffer.clear();
                     break;
                 }
+
+                println!("handling command");
             }
 
             Self::flush_write_buffer(&self.epoll, &connection.socket, &mut connection.write_state)?;
@@ -148,6 +150,8 @@ impl Server {
 
                     let connection = Connection::new(client_socket);
                     self.connections[client_fd as usize] = Some(connection);
+
+                    println!("Accepted connection fd={}", client_fd);
                 }
 
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -182,6 +186,7 @@ impl Server {
         write_buffer: &mut WriteState,
     ) -> Result<(), RedisError> {
         let result = soc.write(write_buffer.buf.as_slice())?;
+        println!("bytes written: {}", result);
         write_buffer.pos += result;
 
         if write_buffer.pos != write_buffer.buf.len() {

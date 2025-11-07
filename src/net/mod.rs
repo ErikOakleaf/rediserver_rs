@@ -134,8 +134,12 @@ impl Drop for Socket {
 }
 
 fn read_socket(fd: c_int, buffer: &mut Vec<u8>) -> io::Result<usize> {
+    if buffer.spare_capacity_mut().is_empty() {
+        buffer.reserve(buffer.capacity()); 
+    }
+
     let spare = buffer.spare_capacity_mut();
-    let n = unsafe { read(fd, spare.as_mut_ptr() as *mut c_void, buffer.len()) };
+    let n = unsafe { read(fd, spare.as_mut_ptr() as *mut c_void, spare.len()) };
     if n < 0 {
         Err(io::Error::last_os_error())
     } else {

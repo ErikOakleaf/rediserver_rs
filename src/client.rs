@@ -1,9 +1,8 @@
-use std::io;
-
 use libc::INADDR_LOOPBACK;
 use redis::{
-    error::{MAX_MESSAGE_SIZE, ProtocolError, RedisError},
+    error::{ProtocolError, RedisError},
     net::{Socket, make_ipv4_address},
+    protocol::parser::parse_reply,
 };
 
 fn main() -> Result<(), RedisError> {
@@ -14,38 +13,52 @@ fn main() -> Result<(), RedisError> {
 
     println!("CLIENT");
 
-    query(&soc, vec![b"GET", b"hello"])?;
-    println!("FIRST QUERY COMPLETE");
-    query(&soc, vec![b"DEL", b"hello"])?;
-    query(&soc, vec![b"SET", b"hello", b"world"])?;
+    query(&soc, b"*2\r\n$3\r\nGET\r\n$5\r\nhello\r\n".to_vec())?;
+    query(&soc, b"*2\r\n$3\r\nDEL\r\n$5\r\nhello\r\n".to_vec())?;
+    query(
+        &soc,
+        b"*3\r\n$3\r\nSET\r\n$5\r\nhello\r\n$5\r\nworld\r\n".to_vec(),
+    )?;
 
     Ok(())
 }
 
-fn query(soc: &Socket, message: Vec<&[u8]>) -> Result<(), RedisError> {
+fn query(soc: &Socket, message: Vec<u8>) -> Result<(), RedisError> {
+    soc.write_full(message.as_slice())?;
+    println!(
+        "QUERY WRITTEN: {}",
+        str::from_utf8(message.as_slice()).unwrap()
+    );
 
-    println!("QUERY START");
-    let mut write_buffer = [0u8; 4 + MAX_MESSAGE_SIZE];
+    read_reply(soc)?;
 
-    let amount_strings = (message.len() as u32).to_be_bytes();
-    write_buffer[0..4].copy_from_slice(&amount_strings);
+    Ok(())
+}
 
-    let mut position = 4;
+fn read_reply(soc: &Socket) -> Result<(), RedisError> {
+    // for now read whatever is there keep it simple
 
-    for string in message {
-        let string_length = string.len();
-        let string_length_bytes = (string_length as u32).to_be_bytes();
-        write_buffer[position..position + 4].copy_from_slice(&string_length_bytes);
-        position += 4;
+    let mut read_buffer = Vec::<u8>::with_capacity(4100);
+    let mut reply = Vec::<u8>::new();
 
-        write_buffer[position..position + string_length].copy_from_slice(string);
-        position += string_length;
+    loop {
+        let bytes_read = soc.read(&mut read_buffer)?;
+        let result = parse_reply(read_buffer.as_slice());
+        match result {
+            Ok(result) => {
+                reply = result;
+                break;
+            }
+            Err(ProtocolError::Incomplete) => {
+                continue;
+            }
+            Err(e) => return Err(RedisError::ProtocolError(e)),
+        }
     }
 
-    soc.write_full(&write_buffer[..position])?;
+    let s = str::from_utf8(reply.as_slice()).unwrap();
 
-    // read_reply(soc)?;
-    println!("REPLY READ");
+    println!("SERVER SAYS: {}", s);
 
     Ok(())
 }

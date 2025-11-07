@@ -31,9 +31,12 @@ impl Connection {
     pub fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
         let read_result = self.socket.read(&mut self.read_buffer.buf)?;
 
+        println!("bytes read: {}", read_result);
+
         if read_result == 0 {
             return Ok(()); // TODO - this should maybe be an error or something
         }
+
 
         Ok(())
     }

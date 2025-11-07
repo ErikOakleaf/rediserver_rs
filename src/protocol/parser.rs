@@ -36,6 +36,8 @@ impl CommandParseState {
     }
 }
 
+// parsing server side
+
 pub fn parse_command(
     buf: &[u8],
     pos: &mut usize,
@@ -136,6 +138,55 @@ fn parse_bulk_string<'a>(buf: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Pro
     check_crlf(buf, pos)?;
 
     Ok(slice)
+}
+
+// replys
+
+pub fn parse_reply(buf: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+    if buf.is_empty() {
+        return Err(ProtocolError::Incomplete);
+    }
+
+    match buf[0] {
+        b'+' => Ok(parse_simple_string(buf)?.to_vec()),
+        // b'-' => parse_error(buf), // implement this later
+        b'$' => Ok(parse_bulk_string_reply(buf)?.to_vec()),
+        _ => Err(ProtocolError::UnexpectedByte(buf[0])),
+    }
+}
+
+fn parse_simple_string(buf: &[u8]) -> Result<&[u8], ProtocolError> {
+    let mut pos = 0;
+
+    while pos < buf.len() {
+        if pos < buf.len() - 1 && buf[pos] == b'\r' && buf[pos + 1] == b'\n' {
+            return Ok(&buf[..pos]);
+        }
+
+        pos += 1;
+    }
+
+    Err(ProtocolError::Incomplete)
+}
+
+fn parse_bulk_string_reply(buf: &[u8]) -> Result<&[u8], ProtocolError> {
+    let mut pos = 0;
+
+    expect(buf, &mut pos, b'$')?;
+
+    if peek(buf, pos) == b'-' {
+        consume(buf, &mut pos)?;
+        consume(buf, &mut pos)?;
+        check_crlf(buf, &mut pos)?;
+        return Ok(&buf[..pos]);
+    }
+
+    let string_len = parse_number_to_usize(buf, &mut pos)?;
+    check_crlf(buf, &mut pos)?;
+    pos += string_len;
+    check_crlf(buf, &mut pos)?;
+
+    Ok(&buf[..pos])
 }
 
 // helpers
@@ -641,7 +692,10 @@ mod tests {
                     current_string: 2,
                     state: ParseState::Complete,
                 },
-                expected_command: RedisCommand::Set { key: b"hello", value: b"world" },
+                expected_command: RedisCommand::Set {
+                    key: b"hello",
+                    value: b"world",
+                },
             },
         ];
 

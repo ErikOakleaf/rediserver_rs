@@ -8,6 +8,7 @@ pub enum RedisError {
     ProtocolError(ProtocolError),
     ConnectionClosed,
     ConnectionError(ConnectionError),
+    Other(String),
 }
 
 impl From<io::Error> for RedisError {
