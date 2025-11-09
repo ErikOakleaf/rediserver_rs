@@ -1,9 +1,52 @@
 use crate::redis::redis_object::RedisObject;
 
-pub struct HashTableMap {
-    ht1: HashTable,
-    ht2: HashTable,
-    resizing_pos: usize,
+pub enum ResizeState {
+    NotResizing,
+    Resizing {
+        new_ht: HashTable,
+        resizing_pos: usize,
+    },
+}
+
+pub struct HashDict {
+    main_ht: HashTable,
+    state: ResizeState,
+}
+
+impl HashDict {
+    fn help_resizing(&mut self, nwork: usize) {
+        // let (new_ht, resizing_pos) = self.get_resize_state();
+
+        match &mut self.state {
+            ResizeState::Resizing {
+                new_ht,
+                resizing_pos,
+            } => {
+                for i in *resizing_pos..*resizing_pos + nwork {
+                    let current_entry = match &self.main_ht.table[i] {
+                        Some(hash_node) => hash_node,
+                        None => continue,
+                    };
+
+                    let new_node = current_entry.clone();
+                    new_ht.insert(new_node);
+                }
+
+                *resizing_pos += nwork;
+            }
+            ResizeState::NotResizing => {
+                unreachable!("SHOULD HAVE CHECKED THAT IT IS RESIZING BEFORE THIS POINT")
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn is_resizing(&self) -> bool {
+        match self.state {
+            ResizeState::NotResizing => false,
+            ResizeState::Resizing { .. } => true,
+        }
+    }
 }
 
 pub struct HashTable {
@@ -176,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_and_lookup() {
+    fn test_insert_lookup_and_delete() {
         struct TestData {
             key: &'static [u8],
             value: &'static [u8],
@@ -214,6 +257,15 @@ mod tests {
         for test in &tests {
             let result = ht.lookup(test.key).unwrap();
             assert_eq!(&test.expected, result);
+        }
+
+        // delete nodes
+        for test in &tests {
+            let result = ht.delete(test.key);
+            assert_eq!(true, result);
+
+            let lookup = ht.lookup(test.key);
+            assert!(lookup.is_none());
         }
     }
 
