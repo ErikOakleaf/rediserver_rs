@@ -36,6 +36,21 @@ pub struct HashNode {
     hash: u64,
 }
 
+impl HashNode {
+    pub fn new(key: &[u8], value: &[u8]) -> HashNode {
+        let node_key = slice_to_box(key);
+        let node_value = RedisObject::new_from_bytes(value);
+        let node_hash = hash_bytes(key);
+
+        HashNode {
+            key: node_key,
+            value: node_value,
+            next: None,
+            hash: node_hash,
+        }
+    }
+}
+
 pub struct HashTable {
     table: Vec<Option<Box<HashNode>>>,
     used: usize,
@@ -65,13 +80,13 @@ impl HashTable {
     }
 
     pub fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
-        let hash = hash_bytes(key) as usize;
-        let pos = hash & self.mask;
+        let hash = hash_bytes(key);
+        let pos = hash as usize & self.mask;
 
         let mut current = self.table[pos].as_deref()?;
 
         loop {
-            if current.key.as_ref() == key {
+            if current.hash == hash && current.key.as_ref() == key {
                 return Some(current);
             }
             current = current.next.as_deref()?;
@@ -95,6 +110,15 @@ enum RedisValue {
 struct RedisObject {
     value_type: ValueType,
     value: RedisValue,
+}
+
+impl RedisObject {
+    pub fn new_from_bytes(bytes: &[u8]) -> RedisObject {
+        let value_type = ValueType::String;
+        let value = RedisValue::String(bytes.to_vec());
+
+        RedisObject { value_type, value }
+    }
 }
 
 // helper
