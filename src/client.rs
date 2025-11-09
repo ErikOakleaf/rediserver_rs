@@ -36,8 +36,6 @@ fn query(soc: &Socket, message: Vec<u8>) -> Result<(), RedisError> {
 }
 
 fn read_reply(soc: &Socket) -> Result<(), RedisError> {
-    // for now read whatever is there keep it simple
-
     let mut read_buffer = Vec::<u8>::with_capacity(4100);
     let mut reply = Vec::<u8>::new();
 

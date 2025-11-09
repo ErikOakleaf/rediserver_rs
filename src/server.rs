@@ -2,7 +2,7 @@ use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use redis::{
-    connection::{Connection, WriteState},
+    connection::{Connection, WriteBuffer},
     error::{ProtocolError, RedisError},
     net::{Epoll, Socket, make_ipv4_address},
     protocol::parser::{
@@ -106,7 +106,7 @@ impl Server {
                             &connection.command_parse_state,
                         )?;
                         let result = self.redis.execute_command(&command);
-                        Self::handle_redis_result(&result, &mut connection.write_state);
+                        Self::handle_redis_result(&result, &mut connection.write_buffer);
                     }
                     Err(ProtocolError::Incomplete) => {
                         return Ok(());
@@ -121,15 +121,19 @@ impl Server {
                     connection.read_buffer.clear();
                     break;
                 }
-
-                println!("handling command");
             }
 
-            Self::flush_write_buffer(&self.epoll, &connection.socket, &mut connection.write_state)?;
+            Self::flush_write_buffer_after_read(
+                &self.epoll,
+                &mut connection,
+            )?;
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
-            // handle writeable socket here
+            Self::flush_write_buffer_on_write(
+                &self.epoll,
+                &mut connection,
+            )?;
         }
 
         // put the connection back in where it was taken from
@@ -150,8 +154,6 @@ impl Server {
 
                     let connection = Connection::new(client_socket);
                     self.connections[client_fd as usize] = Some(connection);
-
-                    println!("Accepted connection fd={}", client_fd);
                 }
 
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -168,7 +170,7 @@ impl Server {
         Ok(amount_events)
     }
 
-    fn handle_redis_result(result: &RedisResult, write_buffer: &mut WriteState) {
+    fn handle_redis_result(result: &RedisResult, write_buffer: &mut WriteBuffer) {
         match result {
             RedisResult::SimpleString(simple_string) => {
                 write_buffer.append_bytes(simple_string);
@@ -180,19 +182,32 @@ impl Server {
         }
     }
 
-    fn flush_write_buffer(
+    fn flush_write_buffer_after_read(
         epoll: &Epoll,
-        soc: &Socket,
-        write_buffer: &mut WriteState,
+        connection: &mut Connection,
     ) -> Result<(), RedisError> {
-        let result = soc.write(write_buffer.buf.as_slice())?;
-        println!("bytes written: {}", result);
-        write_buffer.pos += result;
+        connection.flush_write_buffer()?;
 
-        if write_buffer.pos != write_buffer.buf.len() {
-            Self::poll_socket_out(epoll, soc.fd)?;
+        if connection.write_buffer.pos != connection.write_buffer.buf.len() {
+            Self::poll_socket_out(epoll, connection.soc.fd)?;
         } else {
-            write_buffer.clear();
+            connection.write_buffer.clear();
+        }
+
+        Ok(())
+    }
+
+    fn flush_write_buffer_on_write(
+        epoll: &Epoll,
+        connection: &mut Connection,
+    ) -> Result<(), RedisError> {
+        connection.flush_write_buffer()?;
+
+        if connection.write_buffer.pos != connection.write_buffer.buf.len() {
+            connection.write_buffer.clear();
+            Self::poll_socket_out(epoll, connection.soc.fd)?;
+        } else {
+            connection.write_buffer.clear();
         }
 
         Ok(())

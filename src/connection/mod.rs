@@ -1,35 +1,32 @@
-mod read_state;
-mod write_state;
+mod read_buffer;
+mod write_buffer;
 
-pub use read_state::ReadBuffer;
-pub use write_state::WriteState;
+pub use read_buffer::ReadBuffer;
+pub use write_buffer::WriteBuffer;
 
-use crate::{
-    error::{MAX_MESSAGE_SIZE, RedisError},
-    net::Socket, protocol::parser::CommandParseState,
-};
+use crate::{error::RedisError, net::Socket, protocol::parser::CommandParseState};
 
 const INIT_BUFFER_SIZE: usize = 4096;
 
 pub struct Connection {
-    pub socket: Socket,
+    pub soc: Socket,
     pub command_parse_state: CommandParseState,
     pub read_buffer: ReadBuffer,
-    pub write_state: WriteState,
+    pub write_buffer: WriteBuffer,
 }
 
 impl Connection {
-    pub fn new(socket: Socket) -> Self {
+    pub fn new(soc: Socket) -> Self {
         Connection {
-            socket: socket,
+            soc: soc,
             command_parse_state: CommandParseState::new(),
             read_buffer: ReadBuffer::new(),
-            write_state: WriteState::new(),
+            write_buffer: WriteBuffer::new(),
         }
     }
 
     pub fn fill_read_buffer(&mut self) -> Result<(), RedisError> {
-        let read_result = self.socket.read(&mut self.read_buffer.buf)?;
+        let read_result = self.soc.read(&mut self.read_buffer.buf)?;
 
         println!("bytes read: {}", read_result);
 
@@ -37,20 +34,13 @@ impl Connection {
             return Ok(()); // TODO - this should maybe be an error or something
         }
 
-
         Ok(())
     }
 
-    // pub fn flush_write_buffer(&mut self) -> Result<bool, RedisError> {
-    //     let ws = &mut self.write_state;
-    //     ws.bytes_written += self.socket.write(&ws.buffer[ws.bytes_written..ws.size])?;
-    //
-    //     if ws.bytes_written == ws.size {
-    //         self.write_state.size = 0;
-    //         self.write_state.bytes_written = 0;
-    //         Ok(true)
-    //     } else {
-    //         Ok(false)
-    //     }
-    // }
+    pub fn flush_write_buffer(&mut self) -> Result<(), RedisError> {
+        let result = self.soc.write(self.write_buffer.buf.as_slice())?;
+        self.write_buffer.pos += result;
+
+        Ok(())
+    }
 }

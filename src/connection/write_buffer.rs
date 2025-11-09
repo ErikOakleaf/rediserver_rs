@@ -1,13 +1,13 @@
 use crate::connection::INIT_BUFFER_SIZE;
 
-pub struct WriteState {
+pub struct WriteBuffer {
     pub buf: Vec<u8>,
     pub pos: usize,
 }
 
-impl WriteState {
+impl WriteBuffer {
     pub fn new() -> Self {
-        WriteState {
+        WriteBuffer {
             buf: Vec::<u8>::with_capacity(INIT_BUFFER_SIZE),
             pos: 0,
         }
