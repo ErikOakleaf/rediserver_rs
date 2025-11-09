@@ -6,7 +6,6 @@ use libc::{
 };
 use libc::{c_int, socket};
 use std::ffi::c_void;
-use std::mem::MaybeUninit;
 use std::{io, mem};
 
 pub struct Socket {
@@ -135,7 +134,7 @@ impl Drop for Socket {
 
 fn read_socket(fd: c_int, buffer: &mut Vec<u8>) -> io::Result<usize> {
     if buffer.spare_capacity_mut().is_empty() {
-        buffer.reserve(buffer.capacity()); 
+        buffer.reserve(buffer.capacity());
     }
 
     let spare = buffer.spare_capacity_mut();
