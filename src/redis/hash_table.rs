@@ -1,5 +1,8 @@
 use crate::redis::redis_object::RedisObject;
 
+const REHASHING_SPEED: usize = 1;
+const MAX_LOAD_FACTOR: usize = 1;
+
 pub enum ResizeState {
     NotResizing,
     Resizing {
@@ -14,37 +17,116 @@ pub struct HashDict {
 }
 
 impl HashDict {
-    fn help_resizing(&mut self, nwork: usize) {
-        // let (new_ht, resizing_pos) = self.get_resize_state();
+    pub fn insert(&mut self, node: Box<HashNode>) {
+        self.try_finish_resizing();
 
         match &mut self.state {
+            ResizeState::NotResizing => {
+                self.main_ht.insert(node);
+
+                // check if resize is needed
+                let load_factor = self.main_ht.used / (self.main_ht.mask + 1);
+                if load_factor >= MAX_LOAD_FACTOR {
+                    self.start_resizing();
+                }
+            }
             ResizeState::Resizing {
                 new_ht,
                 resizing_pos,
             } => {
-                for i in *resizing_pos..*resizing_pos + nwork {
-                    let current_entry = match &self.main_ht.table[i] {
-                        Some(hash_node) => hash_node,
-                        None => continue,
-                    };
-
-                    let new_node = current_entry.clone();
-                    new_ht.insert(new_node);
-                }
-
-                *resizing_pos += nwork;
+                Self::help_resizing(&mut self.main_ht, new_ht, resizing_pos, REHASHING_SPEED);
+                new_ht.insert(node);
             }
-            ResizeState::NotResizing => {
-                unreachable!("SHOULD HAVE CHECKED THAT IT IS RESIZING BEFORE THIS POINT")
+        }
+    }
+
+    pub fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
+        self.try_finish_resizing();
+
+        match &mut self.state {
+            ResizeState::NotResizing => self.main_ht.lookup(key),
+            ResizeState::Resizing {
+                new_ht,
+                resizing_pos,
+            } => {
+                Self::help_resizing(&mut self.main_ht, new_ht, resizing_pos, REHASHING_SPEED);
+                new_ht.lookup(key).or_else(|| self.main_ht.lookup(key))
+            }
+        }
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> bool {
+        self.try_finish_resizing();
+
+        match &mut self.state {
+            ResizeState::NotResizing => self.main_ht.delete(key),
+            ResizeState::Resizing {
+                new_ht,
+                resizing_pos,
+            } => {
+                Self::help_resizing(&mut self.main_ht, new_ht, resizing_pos, REHASHING_SPEED);
+                let main_result = self.main_ht.delete(key);
+                let new_result = new_ht.delete(key);
+                main_result || new_result
+            }
+        }
+    }
+
+    fn help_resizing(
+        main_ht: &mut HashTable,
+        new_ht: &mut HashTable,
+        resizing_pos: &mut usize,
+        nwork: usize,
+    ) {
+        let mut amount_non_empty_buckets = 0;
+        let ceiling = *resizing_pos + nwork * 10;
+
+        while *resizing_pos < ceiling {
+            if *resizing_pos >= main_ht.table.len() {
+                break;
+            }
+
+            let current_entry = match main_ht.table[*resizing_pos].take() {
+                Some(hash_node) => {
+                    *resizing_pos += 1;
+                    hash_node
+                }
+                None => {
+                    *resizing_pos += 1;
+                    continue;
+                }
+            };
+
+            new_ht.insert(current_entry);
+
+            amount_non_empty_buckets += 1;
+            if amount_non_empty_buckets >= nwork {
+                break;
             }
         }
     }
 
     #[inline(always)]
-    fn is_resizing(&self) -> bool {
-        match self.state {
-            ResizeState::NotResizing => false,
-            ResizeState::Resizing { .. } => true,
+    fn start_resizing(&mut self) {
+        self.state = ResizeState::Resizing {
+            new_ht: HashTable::new(self.main_ht.table.capacity() * 2),
+            resizing_pos: 0,
+        };
+    }
+
+    #[inline]
+    fn try_finish_resizing(&mut self) {
+        match &mut self.state {
+            ResizeState::Resizing {
+                new_ht,
+                resizing_pos,
+            } => {
+                if *resizing_pos >= self.main_ht.table.capacity() {
+                    std::mem::swap(&mut self.main_ht, new_ht);
+                    self.state = ResizeState::NotResizing;
+                }
+            }
+            ResizeState::NotResizing => {}
         }
     }
 }
@@ -67,7 +149,7 @@ impl HashTable {
         }
     }
 
-    pub fn insert(&mut self, mut node: Box<HashNode>) {
+    fn insert(&mut self, mut node: Box<HashNode>) {
         let pos = (node.hash as usize) & self.mask;
 
         let mut current = self.table[pos].as_mut();
@@ -87,7 +169,7 @@ impl HashTable {
         self.used += 1;
     }
 
-    pub fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
+    fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
         let hash = hash_bytes(key);
         let pos = hash as usize & self.mask;
 
@@ -101,7 +183,7 @@ impl HashTable {
         }
     }
 
-    pub fn delete(&mut self, key: &[u8]) -> bool {
+    fn delete(&mut self, key: &[u8]) -> bool {
         let hash = hash_bytes(key);
         let pos = hash as usize & self.mask;
 
