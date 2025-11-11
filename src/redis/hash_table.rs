@@ -409,6 +409,7 @@ mod tests {
         let mut hash_dict = HashDict::new();
         let mut inserted = 0;
 
+        // insert until resizing is triggerd
         loop {
             let key_str = format!("key{}", inserted);
             let value_str = format!("value{}", inserted);
@@ -424,6 +425,7 @@ mod tests {
             }
         }
 
+        // misc lookups until resizing is done
         loop {
             let key_str = format!("key{}", inserted);
             let _ = hash_dict.lookup(key_str.as_bytes());
@@ -452,5 +454,4 @@ mod tests {
             assert_eq!(expected, redis_object.value);
         }
     }
-
 }

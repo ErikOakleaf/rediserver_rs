@@ -71,12 +71,17 @@ impl Server {
         let fd = event.u64 as c_int;
         let flags = event.events;
 
+        if (flags & (EPOLLHUP | EPOLLERR) as u32) != 0 {
+            self.connections[fd as usize] = None;
+            return Ok(());
+        }
+
         // listen socket
         if fd == self.listener.fd && (flags & EPOLLIN as u32) != 0 {
             self.accept_new_connections()?;
         }
 
-        let mut connection = match self.connections[fd as usize].take() {
+        let mut connection = match &mut self.connections[fd as usize] {
             Some(connection) => connection,
             None => return Ok(()), // TODO - this should probably return some sort of error since
                                    // there is not a connection to a socket that is till there
@@ -123,21 +128,12 @@ impl Server {
                 }
             }
 
-            Self::flush_write_buffer_after_read(
-                &self.epoll,
-                &mut connection,
-            )?;
+            Self::flush_write_buffer_after_read(&self.epoll, &mut connection)?;
         }
 
         if (flags & EPOLLOUT as u32) != 0 {
-            Self::flush_write_buffer_on_write(
-                &self.epoll,
-                &mut connection,
-            )?;
+            Self::flush_write_buffer_on_write(&self.epoll, &mut connection)?;
         }
-
-        // put the connection back in where it was taken from
-        self.connections[fd as usize] = Some(connection);
 
         Ok(())
     }

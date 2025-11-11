@@ -1,9 +1,11 @@
 mod hash_table;
 mod redis_object;
 
-use std::collections::HashMap;
-
-use crate::{commands::RedisCommand, error::RedisError};
+use crate::{
+    commands::RedisCommand,
+    error::RedisError,
+    redis::hash_table::{HashDict, HashNode},
+};
 
 pub enum RedisResult {
     SimpleString(&'static [u8]),
@@ -12,20 +14,26 @@ pub enum RedisResult {
 }
 
 pub struct Redis {
-    store: HashMap<Vec<u8>, Vec<u8>>,
+    dict: HashDict,
 }
 
 impl Redis {
     pub fn new() -> Self {
         Redis {
-            store: HashMap::<Vec<u8>, Vec<u8>>::new(),
+            dict: HashDict::new(),
         }
     }
 
     pub fn execute_command(&mut self, command: &RedisCommand) -> RedisResult {
         match command {
-            RedisCommand::Set { key, value } => RedisResult::SimpleString(b"+OK\r\n"),
-            RedisCommand::Get { key } => RedisResult::BulkString(b"$-1\r\n".to_vec()),
+            RedisCommand::Set { key, value } => {
+                let node = Box::new(HashNode::new(key, value));
+                self.dict.insert(node);
+                RedisResult::SimpleString(b"+OK\r\n")
+            }
+            RedisCommand::Get { key } => {
+                let node = self.dict.lookup(key);
+                RedisResult::BulkString(b"$-1\r\n".to_vec())},
             RedisCommand::Del { key } => RedisResult::BulkString(b"$-1\r\n".to_vec()),
         }
     }
