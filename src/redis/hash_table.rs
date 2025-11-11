@@ -2,6 +2,7 @@ use crate::redis::redis_object::RedisObject;
 
 const REHASHING_SPEED: usize = 1;
 const MAX_LOAD_FACTOR: usize = 1;
+const INIT_HT_SIZE: usize = 4;
 
 pub enum ResizeState {
     NotResizing,
@@ -17,6 +18,13 @@ pub struct HashDict {
 }
 
 impl HashDict {
+    pub fn new() -> Self {
+        HashDict {
+            main_ht: HashTable::new(INIT_HT_SIZE),
+            state: ResizeState::NotResizing,
+        }
+    }
+
     pub fn insert(&mut self, node: Box<HashNode>) {
         self.try_finish_resizing();
 
@@ -86,9 +94,10 @@ impl HashDict {
                 break;
             }
 
-            let current_entry = match main_ht.table[*resizing_pos].take() {
+            let mut current_entry = match main_ht.table[*resizing_pos].take() {
                 Some(hash_node) => {
                     *resizing_pos += 1;
+                    amount_non_empty_buckets += 1;
                     hash_node
                 }
                 None => {
@@ -97,9 +106,17 @@ impl HashDict {
                 }
             };
 
-            new_ht.insert(current_entry);
+            // insert all entries from the linked list in the new bucket
+            loop {
+                let next = current_entry.next.take(); 
+                new_ht.insert(current_entry); 
 
-            amount_non_empty_buckets += 1;
+                match next {
+                    Some(hash_node) => current_entry = hash_node,
+                    None => break,
+                }
+            }
+
             if amount_non_empty_buckets >= nwork {
                 break;
             }
@@ -384,6 +401,48 @@ mod tests {
             let result = ht.lookup(test.key).unwrap();
             assert_eq!(&test.expected, result);
             assert_eq!(ht.used, 1);
+        }
+    }
+
+    #[test]
+    fn test_resizing_hash_dict() {
+        let mut hash_dict = HashDict::new();
+        let mut inserted = 0;
+        let mut seen_resizing = false;
+
+        loop {
+            let key_str = format!("key{}", inserted);
+            let value_str = format!("value{}", inserted);
+            let node = Box::new(HashNode::new(key_str.as_bytes(), value_str.as_bytes()));
+            hash_dict.insert(node);
+            inserted += 1;
+
+            match hash_dict.state {
+                ResizeState::Resizing { .. } => {
+                    seen_resizing = true;
+                }
+                ResizeState::NotResizing => {
+                    if seen_resizing {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let expected_capacity = 2 * INIT_HT_SIZE;
+        assert_eq!(expected_capacity, hash_dict.main_ht.table.capacity());
+
+        for i in 0..inserted {
+            let key_str = format!("key{}", i);
+
+            let value_str = format!("value{}", i);
+            let expected = RedisObject::new_from_bytes(value_str.as_bytes());
+
+            let redis_object = hash_dict
+                .lookup(key_str.as_bytes())
+                .expect(&format!("Missing key {}", key_str));
+
+            assert_eq!(expected, redis_object.value);
         }
     }
 }
