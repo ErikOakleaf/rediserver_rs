@@ -1,4 +1,4 @@
-use crate::redis::redis_object::RedisObject;
+use crate::redis::redis_object::RedisValue;
 
 const REHASHING_SPEED: usize = 1;
 const MAX_LOAD_FACTOR: usize = 1;
@@ -241,7 +241,7 @@ impl HashTable {
 #[derive(Clone, PartialEq, Debug)]
 pub struct HashNode {
     key: Box<[u8]>,
-    value: RedisObject,
+    value: RedisValue,
     next: Option<Box<HashNode>>,
     hash: u64,
 }
@@ -249,7 +249,7 @@ pub struct HashNode {
 impl HashNode {
     pub fn new(key: &[u8], value: &[u8]) -> HashNode {
         let node_key = slice_to_box(key);
-        let node_value = RedisObject::new_from_bytes(value);
+        let node_value = RedisValue::new_from_bytes(value);
         let node_hash = hash_bytes(key);
 
         HashNode {
@@ -445,7 +445,7 @@ mod tests {
             let key_str = format!("key{}", i);
 
             let value_str = format!("value{}", i);
-            let expected = RedisObject::new_from_bytes(value_str.as_bytes());
+            let expected = RedisValue::new_from_bytes(value_str.as_bytes());
 
             let redis_object = hash_dict
                 .lookup(key_str.as_bytes())
