@@ -108,8 +108,8 @@ impl HashDict {
 
             // insert all entries from the linked list in the new bucket
             loop {
-                let next = current_entry.next.take(); 
-                new_ht.insert(current_entry); 
+                let next = current_entry.next.take();
+                new_ht.insert(current_entry);
 
                 match next {
                     Some(hash_node) => current_entry = hash_node,
@@ -408,7 +408,6 @@ mod tests {
     fn test_resizing_hash_dict() {
         let mut hash_dict = HashDict::new();
         let mut inserted = 0;
-        let mut seen_resizing = false;
 
         loop {
             let key_str = format!("key{}", inserted);
@@ -419,12 +418,20 @@ mod tests {
 
             match hash_dict.state {
                 ResizeState::Resizing { .. } => {
-                    seen_resizing = true;
+                    break;
                 }
+                ResizeState::NotResizing => {}
+            }
+        }
+
+        loop {
+            let key_str = format!("key{}", inserted);
+            let _ = hash_dict.lookup(key_str.as_bytes());
+
+            match hash_dict.state {
+                ResizeState::Resizing { .. } => {}
                 ResizeState::NotResizing => {
-                    if seen_resizing {
-                        break;
-                    }
+                    break;
                 }
             }
         }
@@ -445,4 +452,5 @@ mod tests {
             assert_eq!(expected, redis_object.value);
         }
     }
+
 }
