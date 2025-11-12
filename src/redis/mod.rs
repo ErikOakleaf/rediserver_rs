@@ -10,6 +10,7 @@ use crate::{
 pub enum RedisResult {
     SimpleString(&'static [u8]),
     BulkString(Vec<u8>),
+    Int(i64),
     Error(RedisError),
 }
 
@@ -32,9 +33,27 @@ impl Redis {
                 RedisResult::SimpleString(b"+OK\r\n")
             }
             RedisCommand::Get { key } => {
-                let node = self.dict.lookup(key);
-                RedisResult::BulkString(b"$-1\r\n".to_vec())},
-            RedisCommand::Del { key } => RedisResult::BulkString(b"$-1\r\n".to_vec()),
+                let lookup_node = self.dict.lookup(key);
+                match lookup_node {
+                    Some(value) => {
+                        let response = value.to_resp();
+                        RedisResult::BulkString(response)
+                    }
+                    None => RedisResult::BulkString(b"$-1\r\n".to_vec()),
+                }
+            }
+            RedisCommand::Del { keys } => {
+                let mut amount_deletions: i64 = 0;
+                for key in keys {
+                    let result = self.dict.delete(key);
+
+                    if result == true {
+                        amount_deletions += 1;
+                    }
+                }
+
+                RedisResult::Int(amount_deletions)
+            }
         }
     }
 }

@@ -174,6 +174,10 @@ impl Server {
             RedisResult::BulkString(bulk_string) => {
                 write_buffer.append_bytes(bulk_string.as_slice());
             }
+            RedisResult::Int(num) => {
+                let response = format!(":{}\r\n", num);
+                write_buffer.append_bytes(response.as_bytes());
+            }
             _ => unreachable!("FOR NOW YOU SHOULD NOT BE ABLE TO GET HERE"),
         }
     }
@@ -199,11 +203,9 @@ impl Server {
     ) -> Result<(), RedisError> {
         connection.flush_write_buffer()?;
 
-        if connection.write_buffer.pos != connection.write_buffer.buf.len() {
+        if connection.write_buffer.pos == connection.write_buffer.buf.len() {
             connection.write_buffer.clear();
-            Self::poll_socket_out(epoll, connection.soc.fd)?;
-        } else {
-            connection.write_buffer.clear();
+            Self::poll_socket_in(epoll, connection.soc.fd)?;
         }
 
         Ok(())

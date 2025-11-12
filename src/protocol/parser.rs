@@ -282,9 +282,11 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
             })
         }
         b"DEL" | b"del" | b"Del" => {
-            check_arity_error(1, args.len())?;
+            if args.is_empty() {
+                return Err(ProtocolError::WrongNumberOfArguments);
+            }
             Ok(RedisCommand::Del {
-                key: args[0].as_slice(),
+                keys: args.iter().map(|a| a.as_slice()).collect(),
             })
         }
         b"SET" | b"set" | b"Set" => {
@@ -682,7 +684,17 @@ mod tests {
                     current_string: 2,
                     state: ParseState::Complete,
                 },
-                expected_command: RedisCommand::Del { key: b"hello" },
+                expected_command: RedisCommand::Del { keys: vec![b"hello"] },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"DEL".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec(), b"foo".to_vec(), b"bar".to_vec()],
+                    expected_strings: 5,
+                    current_string: 5,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::Del { keys: vec![b"hello", b"world", b"foo", b"bar"] },
             },
             TestData {
                 parse_state: CommandParseState {

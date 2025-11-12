@@ -48,7 +48,7 @@ impl HashDict {
         }
     }
 
-    pub fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
+    pub fn lookup(&mut self, key: &[u8]) -> Option<&RedisValue> {
         self.try_finish_resizing();
 
         match &mut self.state {
@@ -186,7 +186,7 @@ impl HashTable {
         self.used += 1;
     }
 
-    fn lookup(&mut self, key: &[u8]) -> Option<&HashNode> {
+    fn lookup(&mut self, key: &[u8]) -> Option<&RedisValue> {
         let hash = hash_bytes(key);
         let pos = hash as usize & self.mask;
 
@@ -194,7 +194,7 @@ impl HashTable {
 
         loop {
             if current.hash == hash && current.key.as_ref() == key {
-                return Some(current);
+                return Some(&current.value);
             }
             current = current.next.as_deref()?;
         }
@@ -241,7 +241,7 @@ impl HashTable {
 #[derive(Clone, PartialEq, Debug)]
 pub struct HashNode {
     key: Box<[u8]>,
-    value: RedisValue,
+    pub value: RedisValue,
     next: Option<Box<HashNode>>,
     hash: u64,
 }
@@ -355,7 +355,7 @@ mod tests {
         // extract nodes
         for test in &tests {
             let result = ht.lookup(test.key).unwrap();
-            assert_eq!(&test.expected, result);
+            assert_eq!(&test.expected.value, result);
         }
 
         // delete nodes
@@ -399,7 +399,7 @@ mod tests {
         for test in tests {
             ht.insert(Box::new(HashNode::new(test.key, test.value)));
             let result = ht.lookup(test.key).unwrap();
-            assert_eq!(&test.expected, result);
+            assert_eq!(&test.expected.value, result);
             assert_eq!(ht.used, 1);
         }
     }
@@ -451,7 +451,7 @@ mod tests {
                 .lookup(key_str.as_bytes())
                 .expect(&format!("Missing key {}", key_str));
 
-            assert_eq!(expected, redis_object.value);
+            assert_eq!(expected, redis_object.clone());
         }
     }
 }
