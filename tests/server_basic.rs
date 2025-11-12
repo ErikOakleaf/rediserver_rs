@@ -1,9 +1,11 @@
+use serial_test::serial;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
 #[test]
+#[serial]
 fn test_basic_server_commands() -> std::io::Result<()> {
     // spawn server in another thread
 
@@ -96,6 +98,7 @@ fn test_basic_server_commands() -> std::io::Result<()> {
 }
 
 #[test]
+#[serial]
 fn test_server_partial_reads() -> std::io::Result<()> {
     thread::spawn(|| {
         let mut server = redis::server::Server::new(0, 1234).unwrap();
@@ -171,6 +174,7 @@ fn test_server_partial_reads() -> std::io::Result<()> {
 }
 
 #[test]
+#[serial]
 fn test_server_partial_writes() -> std::io::Result<()> {
     thread::spawn(|| {
         let mut server = redis::server::Server::new(0, 1234).unwrap();

@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 libc = "0.2.177"
 
+[dev-dependencies]
+serial_test = "3.2.0"
+
 [[bin]]
 name = "server"
 path = "src/server_binary.rs"
