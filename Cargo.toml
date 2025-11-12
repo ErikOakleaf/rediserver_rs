@@ -8,7 +8,7 @@ libc = "0.2.177"
 
 [[bin]]
 name = "server"
-path = "src/server.rs"
+path = "src/server_binary.rs"
 
 [[bin]]
 name = "client"

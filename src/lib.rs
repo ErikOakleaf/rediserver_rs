@@ -4,3 +4,4 @@ pub mod connection;
 pub mod commands;
 pub mod protocol;
 pub mod redis;
+pub mod server;

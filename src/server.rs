@@ -1,7 +1,7 @@
 use std::io;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
-use redis::{
+use crate::{
     connection::{Connection, WriteBuffer},
     error::{ProtocolError, RedisError},
     net::{Epoll, Socket, make_ipv4_address},
@@ -14,7 +14,7 @@ use redis::{
 
 const MAX_CONNECTIONS: usize = 1000;
 
-struct Server {
+pub struct Server {
     redis: Redis,
     epoll: Epoll,
     listener: Socket,
@@ -23,7 +23,7 @@ struct Server {
 }
 
 impl Server {
-    fn new(ip: u32, port: u16) -> Result<Self, RedisError> {
+    pub fn new(ip: u32, port: u16) -> Result<Self, RedisError> {
         let redis = Redis::new();
 
         let mut connections: Vec<Option<Connection>> = Vec::with_capacity(MAX_CONNECTIONS);
@@ -56,7 +56,7 @@ impl Server {
         })
     }
 
-    fn handle_events(&mut self) -> Result<(), RedisError> {
+    pub fn run(&mut self) -> Result<(), RedisError> {
         loop {
             let amount_events = self.get_events()?;
 
@@ -218,12 +218,4 @@ impl Server {
     fn poll_socket_out(epoll: &Epoll, connection_fd: c_int) -> io::Result<()> {
         epoll.modify(connection_fd, (EPOLLOUT | EPOLLERR | EPOLLHUP) as u32)
     }
-}
-
-fn main() -> Result<(), RedisError> {
-    let mut server = Server::new(0, 1234)?;
-
-    server.handle_events()?;
-
-    Ok(())
 }
