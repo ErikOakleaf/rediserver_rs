@@ -106,7 +106,7 @@ fn parse_array_header(buf: &[u8], pos: &mut usize) -> Result<usize, ProtocolErro
         Err(e) => return Err(e),
     };
 
-    if *pos + array_len + 2 > buf.len() {
+    if *pos + 2 > buf.len() {
         *pos = start;
         return Err(ProtocolError::Incomplete); // partial read
     }

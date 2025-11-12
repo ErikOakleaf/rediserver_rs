@@ -115,6 +115,7 @@ impl Server {
                     }
                     Err(ProtocolError::Incomplete) => {
                         return Ok(());
+                        // break;
                     }
                     Err(e) => return Err(RedisError::ProtocolError(e)), // this should not return error but handle the error
                                                                         // some other way by skipping the message and report back to the client

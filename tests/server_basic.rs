@@ -94,3 +94,78 @@ fn test_basic_server_commands() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_server_partial_reads() -> std::io::Result<()> {
+    thread::spawn(|| {
+        let mut server = redis::server::Server::new(0, 1234).unwrap();
+        server.run().unwrap();
+    });
+
+    // give server a moment to start
+    thread::sleep(Duration::from_millis(200));
+
+    // connect socket to server
+    let mut stream = TcpStream::connect("127.0.0.1:1234")?;
+
+    struct TestData {
+        command: Vec<&'static [u8]>,
+        expected: &'static [u8],
+    }
+
+    let tests = vec![
+        //basic functionality
+        TestData {
+            command: vec![b"*3\r\n$3\r\nSET\r\n$3", b"\r\nfoo\r\n$3\r\nbar\r\n"],
+            expected: b"+OK\r\n",
+        },
+        TestData {
+            command: vec![
+                b"*3\r",
+                b"\n$3\r\nSET",
+                b"\r\n$",
+                b"3\r\nfoo\r",
+                b"\n$3\r\nbar\r\n",
+            ],
+            expected: b"+OK\r\n",
+        },
+        TestData {
+            command: vec![
+                b"*2\r",
+                b"\n$3\r\nG",
+                b"E",
+                b"T\r\n",
+                b"$3\r",
+                b"\nfo",
+                b"o\r\n",
+            ],
+            expected: b"$3\r\nbar\r\n",
+        },
+        TestData {
+            command: vec![
+                b"*", b"2", b"\r", b"\n", b"$", b"3", b"\r", b"\n", b"D", b"E", b"L", b"\r", b"\n",
+                b"$", b"3", b"\r", b"\n", b"f", b"o", b"o", b"\r", b"\n",
+            ],
+            expected: b":1\r\n",
+        },
+    ];
+
+    for test in tests {
+        for bytes in test.command {
+            stream.write_all(bytes)?;
+        }
+
+        let mut buf = vec![0u8; test.expected.len()];
+        stream.read_exact(&mut buf)?;
+
+        assert_eq!(
+            buf.as_slice(),
+            test.expected,
+            "expected {:?}\ngot: {:?}",
+            buf.as_slice(),
+            test.expected
+        );
+    }
+
+    Ok(())
+}
