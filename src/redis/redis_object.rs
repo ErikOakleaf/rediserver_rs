@@ -1,7 +1,4 @@
-use std::{
-    alloc::{self, Layout},
-    intrinsics::unreachable,
-};
+use std::alloc::{self, Layout};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RedisType {
@@ -66,6 +63,10 @@ impl RedisObject {
     // Helpers
 
     fn get_redis_type(bytes: &[u8]) -> RedisType {
+        if bytes.is_empty() {
+            return RedisType::String;
+        }
+
         let mut num: i64 = 0;
         let mut i = 0;
 
@@ -77,16 +78,32 @@ impl RedisObject {
             _ => false,
         };
 
+        // check if the number starts with zero and has more digits after which would make it a
+        // string and not int
+        if bytes[i] == b'0' && bytes.len() > i + 1 {
+            return RedisType::String;
+        }
+
         while i < bytes.len() {
             if !bytes[i].is_ascii_digit() {
                 return RedisType::String;
             }
 
-            num = num * 10 + (bytes[i] - b'0') as i64;
-        }
+            let digit = (bytes[i] - b'0') as i64;
 
-        if is_negative {
-            num *= -1;
+            if is_negative {
+                match num.checked_mul(10).and_then(|n| n.checked_sub(digit)) {
+                    Some(n) => num = n,
+                    None => return RedisType::String,
+                }
+            } else {
+                match num.checked_mul(10).and_then(|n| n.checked_add(digit)) {
+                    Some(n) => num = n,
+                    None => return RedisType::String,
+                }
+            }
+
+            i += 1;
         }
 
         const I16_MIN: i64 = i16::MIN as i64;
@@ -112,5 +129,105 @@ fn box_bytes_from_slice(src: &[u8]) -> Box<[u8]> {
 
         // Convert raw pointer to Box<[u8]>
         Box::from_raw(std::slice::from_raw_parts_mut(ptr, src.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_redis_type() {
+        struct TestData {
+            bytes: &'static [u8],
+            expected: RedisType,
+        }
+
+        let tests = vec![
+            TestData {
+                bytes: b"hello",
+                expected: RedisType::String,
+            },
+            TestData {
+                bytes: b"",
+                expected: RedisType::String,
+            },
+            TestData {
+                bytes: b"123",
+                expected: RedisType::Int16,
+            },
+            TestData {
+                bytes: b"-123",
+                expected: RedisType::Int16,
+            },
+            TestData {
+                bytes: b"0",
+                expected: RedisType::Int16,
+            },
+            TestData {
+                bytes: b"-0",
+                expected: RedisType::Int16,
+            },
+            TestData {
+                bytes: b"01",
+                expected: RedisType::String,
+            },
+            TestData {
+                bytes: b"32767",
+                expected: RedisType::Int16,
+            },
+            TestData {
+                bytes: b"52767",
+                expected: RedisType::Int32,
+            },
+            TestData {
+                bytes: b"-52767",
+                expected: RedisType::Int32,
+            },
+            TestData {
+                bytes: b"-2147483648",
+                expected: RedisType::Int32,
+            },
+            TestData {
+                bytes: b"2147483647",
+                expected: RedisType::Int32,
+            },
+            TestData {
+                bytes: b"2147483648",
+                expected: RedisType::Int64,
+            },
+            TestData {
+                bytes: b"3147483647",
+                expected: RedisType::Int64,
+            },
+            TestData {
+                bytes: b"-3147483647",
+                expected: RedisType::Int64,
+            },
+            TestData {
+                bytes: b"9223372036854775807",
+                expected: RedisType::Int64,
+            },
+            TestData {
+                bytes: b"-9223372036854775808",
+                expected: RedisType::Int64,
+            },
+            TestData {
+                bytes: b"28399223372036854775808",
+                expected: RedisType::String,
+            },
+        ];
+
+        for test in tests {
+            let result = RedisObject::get_redis_type(test.bytes);
+            assert_eq!(
+                test.expected,
+                result,
+                "for bytes: {}\nexpected type: {:?}\ngot: {:?}",
+                str::from_utf8(test.bytes).unwrap(),
+                test.expected,
+                result
+            );
+        }
     }
 }
