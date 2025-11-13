@@ -274,6 +274,8 @@ fn test_server_partial_reads() -> std::io::Result<()> {
     for test in tests {
         for bytes in test.command {
             stream.write_all(bytes)?;
+            stream.flush()?;
+            std::thread::sleep(Duration::from_micros(500));
         }
 
         let mut buf = vec![0u8; test.expected.len()];
@@ -294,6 +296,9 @@ fn test_server_partial_reads() -> std::io::Result<()> {
 #[test]
 #[serial]
 fn test_server_partial_writes() -> std::io::Result<()> {
+    use libc::{SO_SNDBUF, SOL_SOCKET, setsockopt};
+    use std::os::unix::prelude::AsRawFd;
+
     thread::spawn(|| {
         let mut server = redis::server::Server::new(0, 1234).unwrap();
         server.run().unwrap();
@@ -304,6 +309,18 @@ fn test_server_partial_writes() -> std::io::Result<()> {
 
     // connect socket to server
     let mut stream = TcpStream::connect("127.0.0.1:1234")?;
+
+    let fd = stream.as_raw_fd();
+    let bufsize: i32 = 1; // tiny buffer, very likely smaller than server response
+    unsafe {
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            &bufsize as *const _ as *const _,
+            std::mem::size_of_val(&bufsize) as _,
+        );
+    }
 
     struct TestData {
         command: &'static [u8],
