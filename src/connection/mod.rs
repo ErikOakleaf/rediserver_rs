@@ -38,8 +38,10 @@ impl Connection {
     }
 
     pub fn flush_write_buffer(&mut self) -> Result<(), RedisError> {
-        let result = self.soc.write(self.write_buffer.buf.as_slice())?;
-        self.write_buffer.pos += result;
+        if self.write_buffer.buf.len() > 0 {
+            let result = self.soc.write(self.write_buffer.buf.as_slice())?;
+            self.write_buffer.pos += result;
+        }
 
         Ok(())
     }

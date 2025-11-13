@@ -114,7 +114,7 @@ impl Server {
                         Self::handle_redis_result(&result, &mut connection.write_buffer);
                     }
                     Err(ProtocolError::Incomplete) => {
-                        return Ok(());
+                        break;
                         // break;
                     }
                     Err(e) => return Err(RedisError::ProtocolError(e)), // this should not return error but handle the error
