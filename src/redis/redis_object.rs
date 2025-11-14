@@ -3,9 +3,7 @@ use std::alloc::{self, Layout};
 #[derive(Clone, Debug, PartialEq)]
 pub enum RedisObject {
     String(Box<[u8]>),
-    Int16(Box<i16>),
-    Int32(Box<i32>),
-    Int64(Box<i64>),
+    Int(i64),
 }
 
 impl RedisObject {
@@ -16,9 +14,7 @@ impl RedisObject {
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             RedisObject::String(s) => s.to_vec(),
-            RedisObject::Int16(i) => i.to_string().as_bytes().to_vec(),
-            RedisObject::Int32(i) => i.to_string().as_bytes().to_vec(),
-            RedisObject::Int64(i) => i.to_string().as_bytes().to_vec(),
+            RedisObject::Int(i) => i.to_string().as_bytes().to_vec(),
         }
     }
 
@@ -83,16 +79,7 @@ impl RedisObject {
             i += 1;
         }
 
-        const I16_MIN: i64 = i16::MIN as i64;
-        const I16_MAX: i64 = i16::MAX as i64;
-        const I32_MIN: i64 = i32::MIN as i64;
-        const I32_MAX: i64 = i32::MAX as i64;
-
-        match num {
-            I16_MIN..=I16_MAX => RedisObject::Int16(Box::new(num as i16)),
-            I32_MIN..=I32_MAX => RedisObject::Int32(Box::new(num as i32)),
-            _ => RedisObject::Int64(Box::new(num)),
-        }
+        RedisObject::Int(num)
     }
 }
 
@@ -131,19 +118,19 @@ mod tests {
             },
             TestData {
                 bytes: b"123",
-                expected: RedisObject::Int16(Box::new(123)),
+                expected: RedisObject::Int(123),
             },
             TestData {
                 bytes: b"-123",
-                expected: RedisObject::Int16(Box::new(-123)),
+                expected: RedisObject::Int(-123),
             },
             TestData {
                 bytes: b"0",
-                expected: RedisObject::Int16(Box::new(0)),
+                expected: RedisObject::Int(0),
             },
             TestData {
                 bytes: b"-0",
-                expected: RedisObject::Int16(Box::new(0)),
+                expected: RedisObject::Int(0),
             },
             TestData {
                 bytes: b"01",
@@ -151,43 +138,43 @@ mod tests {
             },
             TestData {
                 bytes: b"32767",
-                expected: RedisObject::Int16(Box::new(32767)),
+                expected: RedisObject::Int(32767),
             },
             TestData {
                 bytes: b"52767",
-                expected: RedisObject::Int32(Box::new(52767)),
+                expected: RedisObject::Int(52767),
             },
             TestData {
                 bytes: b"-52767",
-                expected: RedisObject::Int32(Box::new(-52767)),
+                expected: RedisObject::Int(-52767),
             },
             TestData {
                 bytes: b"-2147483648",
-                expected: RedisObject::Int32(Box::new(-2147483648)),
+                expected: RedisObject::Int(-2147483648),
             },
             TestData {
                 bytes: b"2147483647",
-                expected: RedisObject::Int32(Box::new(2147483647)),
+                expected: RedisObject::Int(2147483647),
             },
             TestData {
                 bytes: b"2147483648",
-                expected: RedisObject::Int64(Box::new(2147483648)),
+                expected: RedisObject::Int(2147483648),
             },
             TestData {
                 bytes: b"3147483647",
-                expected: RedisObject::Int64(Box::new(3147483647)),
+                expected: RedisObject::Int(3147483647),
             },
             TestData {
                 bytes: b"-3147483647",
-                expected: RedisObject::Int64(Box::new(-3147483647)),
+                expected: RedisObject::Int(-3147483647),
             },
             TestData {
                 bytes: b"9223372036854775807",
-                expected: RedisObject::Int64(Box::new(9223372036854775807)),
+                expected: RedisObject::Int(9223372036854775807),
             },
             TestData {
                 bytes: b"-9223372036854775808",
-                expected: RedisObject::Int64(Box::new(-9223372036854775808)),
+                expected: RedisObject::Int(-9223372036854775808),
             },
             TestData {
                 bytes: b"28399223372036854775808",
