@@ -1,47 +1,24 @@
 use std::alloc::{self, Layout};
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum RedisType {
-    String,
-    Int,
-    Int16,
-    Int32,
-    Int64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RedisObject {
-    type_: RedisType,
-    value: Box<[u8]>,
+pub enum RedisObject {
+    String(Box<[u8]>),
+    Int16(Box<i16>),
+    Int32(Box<i32>),
+    Int64(Box<i64>),
 }
 
 impl RedisObject {
     pub fn new_from_bytes(bytes: &[u8]) -> RedisObject {
-        RedisObject {
-            type_: RedisType::String,
-            value: box_bytes_from_slice(bytes),
-        }
+        Self::get_redis_object(bytes)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        match self.type_ {
-            RedisType::String => self.value.to_vec(),
-            RedisType::Int => {
-                let bytes = [
-                    self.value[0],
-                    self.value[1],
-                    self.value[2],
-                    self.value[3],
-                    self.value[4],
-                    self.value[5],
-                    self.value[6],
-                    self.value[7],
-                ];
-                let num = i64::from_be_bytes(bytes);
-
-                num.to_string().into_bytes()
-            }
-            _ => panic!("just something"),
+        match self {
+            RedisObject::String(s) => s.to_vec(),
+            RedisObject::Int16(i) => i.to_string().as_bytes().to_vec(),
+            RedisObject::Int32(i) => i.to_string().as_bytes().to_vec(),
+            RedisObject::Int64(i) => i.to_string().as_bytes().to_vec(),
         }
     }
 
@@ -62,9 +39,9 @@ impl RedisObject {
 
     // Helpers
 
-    fn get_redis_type(bytes: &[u8]) -> RedisType {
+    fn get_redis_object(bytes: &[u8]) -> RedisObject {
         if bytes.is_empty() {
-            return RedisType::String;
+            return RedisObject::String(Box::new([]));
         }
 
         let mut num: i64 = 0;
@@ -81,12 +58,12 @@ impl RedisObject {
         // check if the number starts with zero and has more digits after which would make it a
         // string and not int
         if bytes[i] == b'0' && bytes.len() > i + 1 {
-            return RedisType::String;
+            return RedisObject::String(box_bytes_from_slice(bytes));
         }
 
         while i < bytes.len() {
             if !bytes[i].is_ascii_digit() {
-                return RedisType::String;
+                return RedisObject::String(box_bytes_from_slice(bytes));
             }
 
             let digit = (bytes[i] - b'0') as i64;
@@ -94,12 +71,12 @@ impl RedisObject {
             if is_negative {
                 match num.checked_mul(10).and_then(|n| n.checked_sub(digit)) {
                     Some(n) => num = n,
-                    None => return RedisType::String,
+                    None => return RedisObject::String(box_bytes_from_slice(bytes)),
                 }
             } else {
                 match num.checked_mul(10).and_then(|n| n.checked_add(digit)) {
                     Some(n) => num = n,
-                    None => return RedisType::String,
+                    None => return RedisObject::String(box_bytes_from_slice(bytes)),
                 }
             }
 
@@ -112,9 +89,9 @@ impl RedisObject {
         const I32_MAX: i64 = i32::MAX as i64;
 
         match num {
-            I16_MIN..=I16_MAX => RedisType::Int16,
-            I32_MIN..=I32_MAX => RedisType::Int32,
-            _ => RedisType::Int64,
+            I16_MIN..=I16_MAX => RedisObject::Int16(Box::new(num as i16)),
+            I32_MIN..=I32_MAX => RedisObject::Int32(Box::new(num as i32)),
+            _ => RedisObject::Int64(Box::new(num)),
         }
     }
 }
@@ -137,89 +114,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_redis_type() {
+    fn test_get_redis_object() {
         struct TestData {
             bytes: &'static [u8],
-            expected: RedisType,
+            expected: RedisObject,
         }
 
         let tests = vec![
             TestData {
                 bytes: b"hello",
-                expected: RedisType::String,
+                expected: RedisObject::String(b"hello".to_vec().into_boxed_slice()),
             },
             TestData {
                 bytes: b"",
-                expected: RedisType::String,
+                expected: RedisObject::String(b"".to_vec().into_boxed_slice()),
             },
             TestData {
                 bytes: b"123",
-                expected: RedisType::Int16,
+                expected: RedisObject::Int16(Box::new(123)),
             },
             TestData {
                 bytes: b"-123",
-                expected: RedisType::Int16,
+                expected: RedisObject::Int16(Box::new(-123)),
             },
             TestData {
                 bytes: b"0",
-                expected: RedisType::Int16,
+                expected: RedisObject::Int16(Box::new(0)),
             },
             TestData {
                 bytes: b"-0",
-                expected: RedisType::Int16,
+                expected: RedisObject::Int16(Box::new(0)),
             },
             TestData {
                 bytes: b"01",
-                expected: RedisType::String,
+                expected: RedisObject::String(b"01".to_vec().into_boxed_slice()),
             },
             TestData {
                 bytes: b"32767",
-                expected: RedisType::Int16,
+                expected: RedisObject::Int16(Box::new(32767)),
             },
             TestData {
                 bytes: b"52767",
-                expected: RedisType::Int32,
+                expected: RedisObject::Int32(Box::new(52767)),
             },
             TestData {
                 bytes: b"-52767",
-                expected: RedisType::Int32,
+                expected: RedisObject::Int32(Box::new(-52767)),
             },
             TestData {
                 bytes: b"-2147483648",
-                expected: RedisType::Int32,
+                expected: RedisObject::Int32(Box::new(-2147483648)),
             },
             TestData {
                 bytes: b"2147483647",
-                expected: RedisType::Int32,
+                expected: RedisObject::Int32(Box::new(2147483647)),
             },
             TestData {
                 bytes: b"2147483648",
-                expected: RedisType::Int64,
+                expected: RedisObject::Int64(Box::new(2147483648)),
             },
             TestData {
                 bytes: b"3147483647",
-                expected: RedisType::Int64,
+                expected: RedisObject::Int64(Box::new(3147483647)),
             },
             TestData {
                 bytes: b"-3147483647",
-                expected: RedisType::Int64,
+                expected: RedisObject::Int64(Box::new(-3147483647)),
             },
             TestData {
                 bytes: b"9223372036854775807",
-                expected: RedisType::Int64,
+                expected: RedisObject::Int64(Box::new(9223372036854775807)),
             },
             TestData {
                 bytes: b"-9223372036854775808",
-                expected: RedisType::Int64,
+                expected: RedisObject::Int64(Box::new(-9223372036854775808)),
             },
             TestData {
                 bytes: b"28399223372036854775808",
-                expected: RedisType::String,
+                expected: RedisObject::String(b"28399223372036854775808".to_vec().into_boxed_slice()),
+
             },
         ];
 
         for test in tests {
-            let result = RedisObject::get_redis_type(test.bytes);
+            let result = RedisObject::get_redis_object(test.bytes);
             assert_eq!(
                 test.expected,
                 result,
