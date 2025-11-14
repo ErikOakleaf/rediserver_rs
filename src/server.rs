@@ -2,7 +2,7 @@ use std::io;
 
 use crate::{
     connection::{Connection, WriteBuffer},
-    error::{ProtocolError, RedisError, handle_protocol_error},
+    error::{ProtocolError, RedisError, handle_command_error, handle_protocol_error},
     net::{Epoll, Socket, make_ipv4_address},
     protocol::parser::{
         ParseState, convert_command_parse_state_to_redis_command, parse_command,
@@ -66,6 +66,8 @@ impl Server {
         }
     }
 
+    // TODO this function is in desperate need of refactoring
+
     fn handle_event(&mut self, event_index: usize) -> Result<(), RedisError> {
         let event = &self.events[event_index];
         let fd = event.u64 as c_int;
@@ -107,9 +109,17 @@ impl Server {
 
                 match return_value {
                     Ok(_) => {
-                        let command = convert_command_parse_state_to_redis_command(
+                        let command = match convert_command_parse_state_to_redis_command(
                             &connection.command_parse_state,
-                        )?;
+                        ) {
+                            Ok(command) => command,
+                            Err(e) => {
+                                handle_command_error(&e, &mut connection.write_buffer);
+                                connection.read_buffer.skip_to_next_command();
+                                connection.command_parse_state.clear();
+                                continue;
+                            }
+                        };
                         let result = self.redis.execute_command(&command);
                         Self::handle_redis_result(&result, &mut connection.write_buffer);
                     }
@@ -122,7 +132,7 @@ impl Server {
                         connection.read_buffer.skip_to_next_command();
                         connection.command_parse_state.clear();
                         continue;
-                    }, 
+                    }
                 }
 
                 connection.command_parse_state.clear();

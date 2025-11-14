@@ -17,6 +17,10 @@ impl WriteBuffer {
         self.buf.extend_from_slice(slice);
     }
 
+    pub fn append_byte(&mut self, byte: u8) {
+        self.buf.push(byte);
+    }
+
     pub fn clear(&mut self) {
         self.buf.clear();
         self.pos = 0;

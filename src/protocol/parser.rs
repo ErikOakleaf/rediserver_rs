@@ -1,4 +1,4 @@
-use crate::{commands::RedisCommand, error::ProtocolError};
+use crate::{commands::RedisCommand, error::{CommandError, ProtocolError}};
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseState {
@@ -266,7 +266,7 @@ fn check_crlf_peek(buf: &[u8], pos: &mut usize, byte: u8) -> Result<bool, Protoc
 
 pub fn convert_command_parse_state_to_redis_command<'a>(
     command_parse_state: &'a CommandParseState,
-) -> Result<RedisCommand<'a>, ProtocolError> {
+) -> Result<RedisCommand<'a>, CommandError> {
     let command_name = match &command_parse_state.command_name {
         Some(command_name) => command_name,
         _ => unreachable!("SENT A COMMAND STATE WITHOUT A COMMAND"),
@@ -283,7 +283,7 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
         }
         b"DEL" | b"del" | b"Del" => {
             if args.is_empty() {
-                return Err(ProtocolError::WrongNumberOfArguments { cmd: command_name.to_vec() });
+                return Err(CommandError::WrongNumberOfArguments { cmd: command_name.to_vec() });
             }
             Ok(RedisCommand::Del {
                 keys: args.iter().map(|a| a.as_slice()).collect(),
@@ -296,16 +296,16 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
                 value: args[1].as_slice(),
             })
         }
-        _ => Err(ProtocolError::UnknownCommand(
-            command_name.to_vec(),
-        )),
+        _ => Err(CommandError::UnknownCommand{
+            cmd: command_name.to_vec(),
+        }),
     }
 }
 
 #[inline(always)]
-fn check_arity_error(expected_len: usize, len: usize, cmd: &[u8]) -> Result<(), ProtocolError> {
+fn check_arity_error(expected_len: usize, len: usize, cmd: &[u8]) -> Result<(), CommandError> {
     if len != expected_len {
-        return Err(ProtocolError::WrongNumberOfArguments { cmd: cmd.to_vec() });
+        return Err(CommandError::WrongNumberOfArguments { cmd: cmd.to_vec() });
     }
 
     Ok(())
