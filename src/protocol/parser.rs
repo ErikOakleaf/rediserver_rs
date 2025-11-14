@@ -276,36 +276,36 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
 
     match command_name.as_slice() {
         b"GET" | b"get" | b"Get" => {
-            check_arity_error(1, args.len())?;
+            check_arity_error(1, args.len(), command_name.as_slice())?;
             Ok(RedisCommand::Get {
                 key: args[0].as_slice(),
             })
         }
         b"DEL" | b"del" | b"Del" => {
             if args.is_empty() {
-                return Err(ProtocolError::WrongNumberOfArguments);
+                return Err(ProtocolError::WrongNumberOfArguments { cmd: command_name.to_vec() });
             }
             Ok(RedisCommand::Del {
                 keys: args.iter().map(|a| a.as_slice()).collect(),
             })
         }
         b"SET" | b"set" | b"Set" => {
-            check_arity_error(2, args.len())?;
+            check_arity_error(2, args.len(), command_name.as_slice())?;
             Ok(RedisCommand::Set {
                 key: args[0].as_slice(),
                 value: args[1].as_slice(),
             })
         }
-        _ => Err(ProtocolError::UnkownCommand(
-            str::from_utf8(command_name).unwrap().to_string(),
+        _ => Err(ProtocolError::UnknownCommand(
+            command_name.to_vec(),
         )),
     }
 }
 
 #[inline(always)]
-fn check_arity_error(expected_len: usize, len: usize) -> Result<(), ProtocolError> {
+fn check_arity_error(expected_len: usize, len: usize, cmd: &[u8]) -> Result<(), ProtocolError> {
     if len != expected_len {
-        return Err(ProtocolError::WrongNumberOfArguments);
+        return Err(ProtocolError::WrongNumberOfArguments { cmd: cmd.to_vec() });
     }
 
     Ok(())

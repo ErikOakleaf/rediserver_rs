@@ -1,9 +1,8 @@
 use std::io;
 
-use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 use crate::{
     connection::{Connection, WriteBuffer},
-    error::{ProtocolError, RedisError},
+    error::{ProtocolError, RedisError, handle_protocol_error},
     net::{Epoll, Socket, make_ipv4_address},
     protocol::parser::{
         ParseState, convert_command_parse_state_to_redis_command, parse_command,
@@ -11,6 +10,7 @@ use crate::{
     },
     redis::{Redis, RedisResult},
 };
+use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, c_int, epoll_event};
 
 const MAX_CONNECTIONS: usize = 1000;
 
@@ -117,8 +117,12 @@ impl Server {
                         break;
                         // break;
                     }
-                    Err(e) => return Err(RedisError::ProtocolError(e)), // this should not return error but handle the error
-                                                                        // some other way by skipping the message and report back to the client
+                    Err(e) => {
+                        handle_protocol_error(&e, &mut connection.write_buffer);
+                        connection.read_buffer.skip_to_next_command();
+                        connection.command_parse_state.clear();
+                        continue;
+                    }, 
                 }
 
                 connection.command_parse_state.clear();

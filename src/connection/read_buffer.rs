@@ -17,4 +17,12 @@ impl ReadBuffer {
         self.buf.clear();
         self.pos = 0;
     }
+
+    pub fn skip_to_next_command(&mut self) {
+        if let Some(pos) = self.buf[self.pos..].iter().position(|&b| b == b'*') {
+            self.pos += pos;
+        } else {
+            self.clear();
+        }
+    }
 }
