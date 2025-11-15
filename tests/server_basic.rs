@@ -416,7 +416,6 @@ fn test_server_partial_writes() -> std::io::Result<()> {
     Ok(())
 }
 
-
 #[test]
 #[serial]
 fn test_basic_errors_commands() -> std::io::Result<()> {
@@ -465,12 +464,86 @@ fn test_basic_errors_commands() -> std::io::Result<()> {
         stream.read_exact(&mut buf)?;
 
         assert_eq!(
-            buf.as_slice(),
             test.expected,
-            "expected {:?}\ngot: {:?}",
             buf.as_slice(),
-            test.expected
+            "expected {:?}\ngot: {:?}",
+            test.expected,
+            buf.as_slice(),
         );
+    }
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_errors_and_successful_commands() -> std::io::Result<()> {
+    // spawn server in another thread
+
+    thread::spawn(|| {
+        let mut server = redis::server::Server::new(0, 1234).unwrap();
+        server.run().unwrap();
+    });
+
+    // give server a moment to start
+    thread::sleep(Duration::from_millis(200));
+
+    // connect socket to server
+    let mut stream = TcpStream::connect("127.0.0.1:1234")?;
+
+    struct TestData {
+        command: &'static [u8],
+        expected_responses: Vec<&'static [u8]>,
+    }
+
+    let tests = vec![
+        TestData {
+            command: b"*3\r\n$3\rSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n",
+            expected_responses: vec![
+                b"-ERR Protocol error: expected: '\n', got: 'S'\r\n",
+                b"$-1\r\n",
+            ],
+        },
+        TestData {
+            command: b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n*2\r\n$2\r\nGE\r\n$3\r\nfoo\r\n*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n",
+            expected_responses: vec![
+                b"+OK\r\n",
+                b"-ERR unknown command 'GE'\r\n",
+                b"$3\r\nbar\r\n"
+            ],
+        },
+        TestData {
+            command: b"*1\r\n$3\r\nGET\r\n*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
+            expected_responses: vec![
+                b"-ERR wrong number of arguments for 'GET' command\r\n",
+                b"+OK\r\n",
+            ],
+        },
+        TestData {
+            command: b"*3\r\n$4\r\nABCD\r\n$1\r\nx\r\n$1\r\ny\r\n*1\r\n$4\r\nEFGH\r\n*2\r\n$3\r\nGET\r\n$3\r\nabc\r\n",
+            expected_responses: vec![
+                b"-ERR unknown command 'ABCD'\r\n",
+                b"-ERR unknown command 'EFGH'\r\n",
+                b"$-1\r\n", 
+            ],
+        },
+    ];
+
+    for test in tests {
+        stream.write_all(test.command)?;
+
+        for expected in test.expected_responses {
+            let mut buf = vec![0u8; expected.len()];
+            stream.read_exact(&mut buf)?;
+
+            assert_eq!(
+                expected,
+                buf.as_slice(),
+                "expected {:?}\ngot: {:?}",
+                expected,
+                buf.as_slice(),
+            );
+        }
     }
 
     Ok(())
