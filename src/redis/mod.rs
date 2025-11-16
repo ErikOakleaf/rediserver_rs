@@ -1,5 +1,6 @@
 mod hash_table;
 mod redis_object;
+mod zip_list;
 
 use crate::{
     commands::RedisCommand,
