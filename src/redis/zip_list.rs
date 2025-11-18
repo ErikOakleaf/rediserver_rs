@@ -1,10 +1,24 @@
 use std::mem::{self};
 
+
 use crate::redis::redis_object::RedisObject;
 
 const ZL_HEADERS_SIZE: usize = mem::size_of::<u32>() * 2 + mem::size_of::<u16>();
 const ZL_END_SIZE: usize = mem::size_of::<u8>();
 const ZL_END: u8 = 0xFF;
+
+const INT8_TAG: u8 = 0b1111_1110;
+const INT16_TAG: u8 = 0b1100_0000;
+const INT24_TAG: u8 = 0b1111_0000;
+const INT32_TAG: u8 = 0b1101_0000;
+const INT64_TAG: u8 = 0b1110_0000;
+const STR6_TAG: u8 = 0b0000_0000;
+const STR14_TAG: u8 = 0b0100_0000;
+const STR32_TAG: u8 = 0b1000_0000;
+
+const STR6_MASK: u8 = 0b1100_0000;
+const STR14_MASK: u8 = 0b1100_0000;
+
 
 pub struct ZipList {
     data: Vec<u8>,
@@ -26,14 +40,27 @@ impl ZipList {
     }
 
     fn push(&mut self, value: ZipEntry) {
-        self.get_tail_prevlen();
+        let prevlen = self.get_tail_prevlen();
 
         // Remove 0xFF
         self.data.pop();
 
-        match value {
-            ZipEntry::Int8()
+        // add prevlen
+        if prevlen < 254 {
+            self.data.push(prevlen as u8);
+        } else {
+            self.data.push(0xFE);
+            self.data.extend_from_slice(&prevlen.to_le_bytes());
         }
+
+        // match value {
+        //     ZipEntry::Int8(i) => {
+        //
+        //     }
+        // }
+
+        // add back 0xFF
+        self.data.push(0xFF);
     }
 
     // Helpers
@@ -113,7 +140,12 @@ impl ZipEntry {
 
         match obj {
             RedisObject::Int(i) => match i {
-                0..=12 => ZipEntry::Int4BitsImmediate(i as u8),
+                0..=12 => {
+                    let num = i as u8 + 1;
+                    let tag = 0b1111_0000;
+                    let val = num | tag;
+                    ZipEntry::Int4BitsImmediate(val)
+                } ,
                 INT8_MIN..=INT8_MAX => ZipEntry::Int8(i as i8),
                 INT16_MIN..=INT16_MAX => ZipEntry::Int16(i as i16),
                 INT24_MIN..=INT24_MAX => ZipEntry::Int24(i as i32),
@@ -190,15 +222,15 @@ mod tests {
         let tests = vec![
             TestData {
                 obj: RedisObject::new_from_bytes(b"5"),
-                expected: ZipEntry::Int4BitsImmediate(5),
+                expected: ZipEntry::Int4BitsImmediate(0b1111_0110),
             },
             TestData {
                 obj: RedisObject::new_from_bytes(b"12"),
-                expected: ZipEntry::Int4BitsImmediate(12),
+                expected: ZipEntry::Int4BitsImmediate(0b1111_1101),
             },
             TestData {
                 obj: RedisObject::new_from_bytes(b"0"),
-                expected: ZipEntry::Int4BitsImmediate(0),
+                expected: ZipEntry::Int4BitsImmediate(0b1111_0001),
             },
             TestData {
                 obj: RedisObject::new_from_bytes(b"100"),
@@ -327,7 +359,7 @@ mod tests {
         }
     }
 
-    #[test]
+#[test]
     fn test_get_encoding_from_header() {
         struct TestData {
             header: u8,
