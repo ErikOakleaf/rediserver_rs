@@ -1,6 +1,5 @@
 use std::mem::{self};
 
-
 use crate::redis::redis_object::RedisObject;
 
 const ZL_HEADERS_SIZE: usize = mem::size_of::<u32>() * 2 + mem::size_of::<u16>();
@@ -18,7 +17,6 @@ const STR32_TAG: u8 = 0b1000_0000;
 
 const STR6_MASK: u8 = 0b1100_0000;
 const STR14_MASK: u8 = 0b1100_0000;
-
 
 pub struct ZipList {
     data: Vec<u8>,
@@ -45,19 +43,87 @@ impl ZipList {
         // Remove 0xFF
         self.data.pop();
 
+        // Set tail to point to the new value
+        self.set_lz_tail(self.data.len() as u32);
+        self.increment_zl_len(1);
+
         // add prevlen
         if prevlen < 254 {
             self.data.push(prevlen as u8);
+            self.increment_zl_bytes(1);
         } else {
             self.data.push(0xFE);
             self.data.extend_from_slice(&prevlen.to_le_bytes());
+            self.increment_zl_bytes(5);
         }
 
-        // match value {
-        //     ZipEntry::Int8(i) => {
-        //
-        //     }
-        // }
+        match value {
+            ZipEntry::Int4BitsImmediate(i) => {
+                let num = (i + 1) | 0b1111_0000;
+                self.data.push(num);
+                self.increment_zl_bytes(1);
+            }
+            ZipEntry::Int8(i) => {
+                self.data.push(INT8_TAG);
+                self.data.push(i as u8);
+                self.increment_zl_bytes(2);
+            }
+            ZipEntry::Int16(i) => {
+                self.data.push(INT16_TAG);
+                self.data.extend_from_slice(&i.to_le_bytes());
+                self.increment_zl_bytes(3);
+            }
+            ZipEntry::Int24(i) => {
+                self.data.push(INT24_TAG);
+                self.data.extend_from_slice(&Self::i24_to_le_bytes(i));
+                self.increment_zl_bytes(4);
+            }
+            ZipEntry::Int32(i) => {
+                self.data.push(INT32_TAG);
+                self.data.extend_from_slice(&i.to_le_bytes());
+                self.increment_zl_bytes(5);
+            }
+            ZipEntry::Int64(i) => {
+                self.data.push(INT64_TAG);
+                self.data.extend_from_slice(&i.to_le_bytes());
+                self.increment_zl_bytes(9);
+            }
+            ZipEntry::Str6BitsLength(s) => {
+                // length and tag 00 encoded here
+                let str_tag = (s.len() as u8) & 0b00111111;
+                self.data.push(str_tag);
+                self.data.extend_from_slice(&s);
+
+                let str_total_len = (s.len() + 1) as u32;
+                self.increment_zl_bytes(str_total_len);
+            }
+            ZipEntry::Str14BitsLength(s) => {
+                // this is ugly right now
+                let str_len = s.len() as u32;
+                // the first mask is technically unesicary because the length should never be
+                // touching the upper two bytes
+                let str_tag_1 = (((str_len >> 8) as u8) & 0b0011_1111) | 0b0100_0000;
+                let str_tag_2 = str_len as u8;
+
+                self.data.push(str_tag_1);
+                self.data.push(str_tag_2);
+
+                self.data.extend_from_slice(&s);
+
+                let str_total_len = str_len + 2;
+                self.increment_zl_bytes(str_total_len);
+            }
+            ZipEntry::Str32BitsLength(s) => {
+                let str_len = s.len() as u32;
+
+                self.data.push(STR32_TAG);
+                self.data.extend_from_slice(&str_len.to_be_bytes());
+                self.data.extend_from_slice(&s);
+
+                let str_total_len = str_len + 5;
+                self.increment_zl_bytes(str_total_len);
+            }
+        }
 
         // add back 0xFF
         self.data.push(0xFF);
@@ -93,20 +159,66 @@ impl ZipList {
     }
 
     #[inline(always)]
+    fn set_lz_bytes(&mut self, new_value: u32) {
+        let bytes = new_value.to_le_bytes();
+        self.data[0] = bytes[0];
+        self.data[1] = bytes[1];
+        self.data[2] = bytes[2];
+        self.data[3] = bytes[3];
+    }
+
+    #[inline(always)]
+    fn set_lz_tail(&mut self, new_value: u32) {
+        let bytes = new_value.to_le_bytes();
+        self.data[4] = bytes[0];
+        self.data[5] = bytes[1];
+        self.data[6] = bytes[2];
+        self.data[7] = bytes[3];
+    }
+
+    #[inline(always)]
+    fn set_lz_len(&mut self, new_value: u16) {
+        let bytes = new_value.to_le_bytes();
+        self.data[8] = bytes[0];
+        self.data[9] = bytes[1];
+    }
+
+    #[inline(always)]
+    fn increment_zl_bytes(&mut self, n: u32) {
+        let mut num = self.get_zl_bytes();
+        num += n;
+        self.set_lz_bytes(num);
+    }
+
+    #[inline(always)]
+    fn increment_zl_len(&mut self, n: u16) {
+        let mut num = self.get_zl_len();
+        num += n;
+        self.set_lz_len(num);
+    }
+
+    #[inline(always)]
     fn get_tail_prevlen(&self) -> u32 {
         // subtract 1 for the 0xFF
         self.get_zl_bytes() - self.get_zl_tail() - 1
     }
 
+    #[inline(always)]
     fn extract_6bit_length(byte: u8) -> u8 {
         byte & 0b0011_1111
     }
 
+    #[inline(always)]
     fn extract_14bit_length(byte1: u8, byte2: u8) -> u16 {
         let high_bits = (byte1 & 0b0011_1111) as u16;
         let low_bits = byte2 as u16;
 
         (high_bits << 8) | low_bits
+    }
+
+    #[inline(always)]
+    fn i24_to_le_bytes(num: i32) -> [u8; 3] {
+        [num as u8, (num >> 8) as u8, (num >> 16) as u8]
     }
 }
 
@@ -145,7 +257,7 @@ impl ZipEntry {
                     let tag = 0b1111_0000;
                     let val = num | tag;
                     ZipEntry::Int4BitsImmediate(val)
-                } ,
+                }
                 INT8_MIN..=INT8_MAX => ZipEntry::Int8(i as i8),
                 INT16_MIN..=INT16_MAX => ZipEntry::Int16(i as i16),
                 INT24_MIN..=INT24_MAX => ZipEntry::Int24(i as i32),
@@ -177,18 +289,6 @@ enum EncodingType {
 
 impl EncodingType {
     fn from_header(header: u8) -> EncodingType {
-        const INT8_TAG: u8 = 0b1111_1110;
-        const INT16_TAG: u8 = 0b1100_0000;
-        const INT24_TAG: u8 = 0b1111_0000;
-        const INT32_TAG: u8 = 0b1101_0000;
-        const INT64_TAG: u8 = 0b1110_0000;
-        const STR6_TAG: u8 = 0b0000_0000;
-        const STR14_TAG: u8 = 0b0100_0000;
-        const STR32_TAG: u8 = 0b1000_0000;
-
-        const STR6_MASK: u8 = 0b1100_0000;
-        const STR14_MASK: u8 = 0b1100_0000;
-
         match header {
             INT8_TAG => EncodingType::Int8,
             INT16_TAG => EncodingType::Int16,
@@ -211,6 +311,103 @@ impl EncodingType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_zip_list_push() {
+        struct TestData {
+            entries: Vec<ZipEntry>,
+            expected: &'static [u8],
+        }
+
+        #[rustfmt::skip]
+        let tests = vec![
+            TestData {
+                entries: vec![ZipEntry::Int4BitsImmediate(5)],
+                expected: &[
+                    /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int8(100)],
+                expected: &[
+                    /*zl bytes*/ 14, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT8_TAG, 100,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int16(1000)],
+                expected: &[
+                    /*zl bytes*/ 15, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT16_TAG, 0xE8, 0x03, 
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int24(8388607)],
+                expected: &[
+                    /*zl bytes*/ 16, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int32(2147483647)],
+                expected: &[
+                    /*zl bytes*/ 17, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F, 
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int64(5000000000)],
+                expected: &[
+                    /*zl bytes*/ 21, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00,
+                    0x00,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            // all int tests together
+            TestData {
+                entries: vec![
+                    ZipEntry::Int4BitsImmediate(5),
+                    ZipEntry::Int8(100),
+                    ZipEntry::Int16(1000),
+                    ZipEntry::Int24(8388607),
+                    ZipEntry::Int32(2147483647),
+                    ZipEntry::Int64(5000000000),
+                ],
+                expected: &[
+                    /*zl bytes*/ 41, 0, 0, 0, /*zl tail*/ 30, 0, 0, 0, /*zl len*/ 6, 0,
+                    /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
+
+                    /*prevlen*/ 2, /*data*/ INT8_TAG, 100,
+
+                    /*prevlen*/ 3, /*data*/ INT16_TAG, 0xE8, 0x03,
+
+                    /*prevlen*/ 4, /*data*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
+
+                    /*prevlen*/ 5, /*data*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
+
+                    /*prevlen*/ 6, /*data*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+
+                    /*zl end*/ 0xFF,
+                ],
+            },
+        ];
+
+        for test in tests {
+            let mut zl = ZipList::new();
+            for entry in test.entries {
+                zl.push(entry);
+            }
+
+            assert_eq!(test.expected, &zl.data);
+        }
+    }
 
     #[test]
     fn test_zip_entry_from_redis_object() {
@@ -359,7 +556,7 @@ mod tests {
         }
     }
 
-#[test]
+    #[test]
     fn test_get_encoding_from_header() {
         struct TestData {
             header: u8,
