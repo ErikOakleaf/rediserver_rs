@@ -130,6 +130,51 @@ impl ZipEntry {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum EncodingType {
+    Int4BitsImmediate,
+    Int8,
+    Int16,
+    Int24,
+    Int32,
+    Int64,
+    Str6BitsLength,
+    Str14BitsLength,
+    Str32BitsLength,
+}
+
+impl EncodingType {
+    fn from_header(header: u8) -> EncodingType {
+        const INT8_TAG: u8 = 0b1111_1110;
+        const INT16_TAG: u8 = 0b1100_0000;
+        const INT24_TAG: u8 = 0b1111_0000;
+        const INT32_TAG: u8 = 0b1101_0000;
+        const INT64_TAG: u8 = 0b1110_0000;
+        const STR6_TAG: u8 = 0b0000_0000;
+        const STR14_TAG: u8 = 0b0100_0000;
+        const STR32_TAG: u8 = 0b1000_0000;
+
+        const STR6_MASK: u8 = 0b1100_0000;
+        const STR14_MASK: u8 = 0b1100_0000;
+
+        match header {
+            INT8_TAG => EncodingType::Int8,
+            INT16_TAG => EncodingType::Int16,
+            INT24_TAG => EncodingType::Int24,
+            INT32_TAG => EncodingType::Int32,
+            INT64_TAG => EncodingType::Int64,
+            STR32_TAG => EncodingType::Str32BitsLength,
+
+            // Int4: 1111xxxx where xxxx is 0001-1101 (0xF1-0xFD)
+            0xF1..=0xFD => EncodingType::Int4BitsImmediate,
+
+            _ if (header & STR14_MASK) == STR14_TAG => EncodingType::Str14BitsLength,
+            _ if (header & STR6_MASK) == STR6_TAG => EncodingType::Str6BitsLength,
+
+            _ => panic!("invalid header"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
