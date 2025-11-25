@@ -1,4 +1,7 @@
-use std::mem::{self};
+use std::{
+    mem::{self},
+    ptr,
+};
 
 use crate::redis::redis_object::RedisObject;
 
@@ -44,7 +47,7 @@ impl ZipList {
         self.data.pop();
 
         // Set tail to point to the new value
-        self.set_lz_tail(self.data.len() as u32);
+        self.set_zl_tail(self.data.len() as u32);
         self.increment_zl_len(1);
 
         // add prevlen
@@ -129,7 +132,197 @@ impl ZipList {
         self.data.push(0xFF);
     }
 
+    fn insert(&mut self, index: usize, value: ZipEntry) {
+        // if the index is at the end just use the push logic
+        if index == self.get_zl_len() as usize {
+            self.push(value);
+            return;
+        } else if index > self.get_zl_len() as usize {
+            panic!("inserted in a index that does not exist")
+        }
+
+        let mut offset = if index == 0 {
+            ZL_HEADERS_SIZE 
+        } else {
+            self.get_index_offset(index)
+        };
+
+        // skip prevlen
+        if self.data[offset] < 0xFE {
+            offset += 1;
+            println!("skipping prevlen 1 byte")
+        } else if self.data[offset] == 0xFE {
+            offset += 5;
+        } else {
+            panic!("incorrect encoding")
+        }
+
+        let entry_length = Self::get_entry_length(&value);
+        let prevlen_length = { if entry_length >= 254 { 5 } else { 1 } };
+        let total_len = entry_length + prevlen_length;
+
+        // shift to make space in the array
+        self.shift_bytes(offset, total_len);
+        println!("shifting bytes at {} by {}", offset, total_len);
+
+        // insert the thing
+        match value {
+            ZipEntry::Int4BitsImmediate(i) => {
+                let num = (i + 1) | 0b1111_0000;
+                self.data[offset] = num;
+
+                offset += 1;
+            }
+            ZipEntry::Int8(i) => {
+                self.data[offset] = INT8_TAG;
+                self.data[offset + 1] = i as u8;
+
+                offset += 2;
+            }
+            ZipEntry::Int16(i) => {
+                self.data[offset] = INT16_TAG;
+                offset += 1;
+
+                self.data[offset..offset + 2].copy_from_slice(&i.to_le_bytes());
+
+                offset += 2
+            }
+            ZipEntry::Int24(i) => {
+                self.data[offset] = INT24_TAG;
+                offset += 1;
+
+                self.data[offset..offset + 3].copy_from_slice(&Self::i24_to_le_bytes(i));
+
+                offset += 3
+            }
+            ZipEntry::Int32(i) => {
+                self.data[offset] = INT32_TAG;
+                offset += 1;
+
+                self.data[offset..offset + 4].copy_from_slice(&i.to_le_bytes());
+
+                offset += 4
+            }
+            ZipEntry::Int64(i) => {
+                self.data[offset] = INT64_TAG;
+                offset += 1;
+
+                self.data[offset..offset + 8].copy_from_slice(&i.to_le_bytes());
+
+                offset += 8
+            }
+            ZipEntry::Str6BitsLength(s) => {
+                // length and tag 00 encoded here
+                let str_tag = (s.len() as u8) & 0b00111111;
+                self.data[offset] = str_tag;
+                offset += 1;
+
+                self.data[offset..offset + s.len()].copy_from_slice(&s);
+
+                offset += s.len();
+            }
+            ZipEntry::Str14BitsLength(s) => {
+                // this is ugly right now
+                let str_len = s.len() as u32;
+                // the first mask is technically unesicary because the length should never be
+                // touching the upper two bytes
+                let str_tag_1 = (((str_len >> 8) as u8) & 0b0011_1111) | 0b0100_0000;
+                let str_tag_2 = str_len as u8;
+
+                self.data[offset] = str_tag_1;
+                self.data[offset + 1] = str_tag_2;
+
+                offset += 2;
+
+                self.data[offset..offset + s.len()].copy_from_slice(&s);
+
+                offset += s.len();
+            }
+            ZipEntry::Str32BitsLength(s) => {
+                let str_len = s.len() as u32;
+
+                self.data[offset] = STR32_TAG;
+                offset += 1;
+
+                self.data[offset..offset + 4].copy_from_slice(&str_len.to_be_bytes());
+                offset += 4;
+
+                self.data[offset..offset + s.len()].copy_from_slice(&s);
+
+                offset += s.len();
+            }
+        }
+
+        // add prevlen
+        if total_len < 254 {
+            self.data[offset] = total_len as u8;
+        } else {
+            self.data[offset] = 0xFE;
+            offset += 1;
+            self.data[offset..offset + 4].copy_from_slice(&total_len.to_le_bytes());
+        }
+
+        // change headers
+        self.increment_zl_bytes(total_len as u32);
+        self.increment_zl_tail(total_len as u32);
+        self.increment_zl_len(1);
+    }
+
     // Helpers
+
+    fn get_index_offset(&self, index: usize) -> usize {
+        // TODO make this be able to walk forward and backwards maybe and handle the index 0 case
+
+        let len = self.get_zl_len() as usize;
+        let indices_to_step_back = len - index - 1;
+        let mut current_index = self.get_zl_tail() as usize;
+
+        for _ in 0..indices_to_step_back {
+            current_index -= Self::get_prevlen(&self.data[current_index..]);
+        }
+
+        return current_index;
+    }
+
+    fn get_prevlen(prevlen: &[u8]) -> usize {
+        if prevlen[0] < 0xFE {
+            return prevlen[0] as usize;
+        } else if prevlen[0] == 0xFE {
+            let bytes = [prevlen[1], prevlen[2], prevlen[3], prevlen[4]];
+            return u32::from_le_bytes(bytes) as usize;
+        } else {
+            panic!("incorrect encoding")
+        }
+    }
+
+    fn get_entry_length(entry: &ZipEntry) -> usize {
+        match entry {
+            ZipEntry::Int4BitsImmediate(_) => 1,
+            ZipEntry::Int8(_) => 2,
+            ZipEntry::Int16(_) => 3,
+            ZipEntry::Int24(_) => 4,
+            ZipEntry::Int32(_) => 5,
+            ZipEntry::Int64(_) => 9,
+            ZipEntry::Str6BitsLength(s) => s.len() + 1,
+            ZipEntry::Str14BitsLength(s) => s.len() + 2,
+            ZipEntry::Str32BitsLength(s) => s.len() + 5,
+        }
+    }
+
+    fn shift_bytes(&mut self, index: usize, n: usize) {
+        let original_len = self.data.len();
+
+        debug_assert!(index <= original_len, "index out of bounds");
+
+        unsafe {
+            self.data.reserve(n);
+            let ptr = self.data.as_mut_ptr();
+
+            std::ptr::copy(ptr.add(index), ptr.add(index + n), original_len - index);
+
+            self.data.set_len(original_len + n);
+        }
+    }
 
     #[inline(always)]
     fn get_zl_bytes(&self) -> u32 {
@@ -159,7 +352,7 @@ impl ZipList {
     }
 
     #[inline(always)]
-    fn set_lz_bytes(&mut self, new_value: u32) {
+    fn set_zl_bytes(&mut self, new_value: u32) {
         let bytes = new_value.to_le_bytes();
         self.data[0] = bytes[0];
         self.data[1] = bytes[1];
@@ -168,7 +361,7 @@ impl ZipList {
     }
 
     #[inline(always)]
-    fn set_lz_tail(&mut self, new_value: u32) {
+    fn set_zl_tail(&mut self, new_value: u32) {
         let bytes = new_value.to_le_bytes();
         self.data[4] = bytes[0];
         self.data[5] = bytes[1];
@@ -177,7 +370,7 @@ impl ZipList {
     }
 
     #[inline(always)]
-    fn set_lz_len(&mut self, new_value: u16) {
+    fn set_zl_len(&mut self, new_value: u16) {
         let bytes = new_value.to_le_bytes();
         self.data[8] = bytes[0];
         self.data[9] = bytes[1];
@@ -187,14 +380,21 @@ impl ZipList {
     fn increment_zl_bytes(&mut self, n: u32) {
         let mut num = self.get_zl_bytes();
         num += n;
-        self.set_lz_bytes(num);
+        self.set_zl_bytes(num);
+    }
+
+    #[inline(always)]
+    fn increment_zl_tail(&mut self, n: u32) {
+        let mut num = self.get_zl_tail();
+        num += n;
+        self.set_zl_tail(num);
     }
 
     #[inline(always)]
     fn increment_zl_len(&mut self, n: u16) {
         let mut num = self.get_zl_len();
         num += n;
-        self.set_lz_len(num);
+        self.set_zl_len(num);
     }
 
     #[inline(always)]
@@ -403,6 +603,62 @@ mod tests {
             let mut zl = ZipList::new();
             for entry in test.entries {
                 zl.push(entry);
+            }
+
+            assert_eq!(test.expected, &zl.data);
+        }
+    }
+
+    #[test]
+    fn test_zip_list_insert() {
+        struct InsertEntry {
+            entry: ZipEntry,
+            index: usize,
+        }
+
+        struct TestData {
+            entries: Vec<InsertEntry>,
+            expected: &'static [u8],
+        }
+
+        let tests = vec![
+            TestData {
+                entries: vec![InsertEntry {
+                    entry: ZipEntry::Int4BitsImmediate(5),
+                    index: 0,
+                }],
+                #[rustfmt::skip]
+                expected: &[
+                    /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![
+                    InsertEntry {
+                        entry: ZipEntry::Int4BitsImmediate(5),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int4BitsImmediate(4),
+                        index: 0,
+                    },
+                ],
+                #[rustfmt::skip]
+                expected: &[
+                    /*zl bytes*/ 15, 0, 0, 0, /*zl tail*/ 12, 0, 0, 0, /*zl len*/ 2, 0,
+                    /*prevlen*/ 0, /*data + tag*/ 0b1111_0101,
+                    /*prevlen*/ 2, /*data + tag*/ 0b1111_0110,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+        ];
+
+        for test in tests {
+            let mut zl = ZipList::new();
+            for entry in test.entries {
+                zl.insert(entry.index, entry.entry);
             }
 
             assert_eq!(test.expected, &zl.data);
