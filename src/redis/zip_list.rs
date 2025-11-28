@@ -1,7 +1,4 @@
-use std::{
-    mem::{self},
-    ptr,
-};
+use std::mem::{self};
 
 use crate::redis::redis_object::RedisObject;
 
@@ -142,23 +139,33 @@ impl ZipList {
         }
 
         let mut offset = if index == 0 {
-            ZL_HEADERS_SIZE 
+            ZL_HEADERS_SIZE
         } else {
             self.get_index_offset(index)
         };
 
         // skip prevlen
+        let current_prevlen;
         if self.data[offset] < 0xFE {
             offset += 1;
+            current_prevlen = 1;
             println!("skipping prevlen 1 byte")
         } else if self.data[offset] == 0xFE {
             offset += 5;
+            current_prevlen = 2;
         } else {
             panic!("incorrect encoding")
         }
 
         let entry_length = Self::get_entry_length(&value);
-        let prevlen_length = { if entry_length >= 254 { 5 } else { 1 } };
+        let prevlen_length = {
+            if entry_length + current_prevlen >= 254 {
+                5
+            } else {
+                1
+            }
+        };
+        let prevlen_value = entry_length + current_prevlen;
         let total_len = entry_length + prevlen_length;
 
         // shift to make space in the array
@@ -254,17 +261,25 @@ impl ZipList {
         }
 
         // add prevlen
-        if total_len < 254 {
-            self.data[offset] = total_len as u8;
+        // total len should not be used here but the entry len plus the previous prevlen len
+        if prevlen_value < 254 {
+            self.data[offset] = prevlen_value as u8;
         } else {
             self.data[offset] = 0xFE;
             offset += 1;
-            self.data[offset..offset + 4].copy_from_slice(&total_len.to_le_bytes());
+            self.data[offset..offset + 4].copy_from_slice(&(prevlen_value as u32).to_le_bytes());
         }
 
         // change headers
         self.increment_zl_bytes(total_len as u32);
-        self.increment_zl_tail(total_len as u32);
+
+        // the ammount the tail moves is depenedent if this is the final index that is not push
+        if index == (self.get_zl_len() - 1) as usize {
+            self.increment_zl_tail((entry_length + current_prevlen) as u32);
+        } else {
+            self.increment_zl_tail(total_len as u32);
+        }
+
         self.increment_zl_len(1);
     }
 
@@ -516,14 +531,14 @@ mod tests {
     fn test_zip_list_push() {
         struct TestData {
             entries: Vec<ZipEntry>,
-            expected: &'static [u8],
+            expected: Vec<u8>,
         }
 
-        #[rustfmt::skip]
         let tests = vec![
             TestData {
                 entries: vec![ZipEntry::Int4BitsImmediate(5)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
                     /*zl end*/ 0xFF,
@@ -531,7 +546,8 @@ mod tests {
             },
             TestData {
                 entries: vec![ZipEntry::Int8(100)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 14, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data*/ INT8_TAG, 100,
                     /*zl end*/ 0xFF,
@@ -539,15 +555,17 @@ mod tests {
             },
             TestData {
                 entries: vec![ZipEntry::Int16(1000)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 15, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
-                    /*prevlen*/ 0, /*data*/ INT16_TAG, 0xE8, 0x03, 
+                    /*prevlen*/ 0, /*data*/ INT16_TAG, 0xE8, 0x03,
                     /*zl end*/ 0xFF,
                 ],
             },
             TestData {
                 entries: vec![ZipEntry::Int24(8388607)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 16, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
                     /*zl end*/ 0xFF,
@@ -555,15 +573,17 @@ mod tests {
             },
             TestData {
                 entries: vec![ZipEntry::Int32(2147483647)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 17, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
-                    /*prevlen*/ 0, /*data*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F, 
+                    /*prevlen*/ 0, /*data*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
                     /*zl end*/ 0xFF,
                 ],
             },
             TestData {
                 entries: vec![ZipEntry::Int64(5000000000)],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 21, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00,
                     0x00,
@@ -580,22 +600,77 @@ mod tests {
                     ZipEntry::Int32(2147483647),
                     ZipEntry::Int64(5000000000),
                 ],
-                expected: &[
+                #[rustfmt::skip]
+                expected: vec![
                     /*zl bytes*/ 41, 0, 0, 0, /*zl tail*/ 30, 0, 0, 0, /*zl len*/ 6, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
 
-                    /*prevlen*/ 2, /*data*/ INT8_TAG, 100,
+                    /*prevlen*/ 2, /*data + tag*/ INT8_TAG, 100,
 
-                    /*prevlen*/ 3, /*data*/ INT16_TAG, 0xE8, 0x03,
+                    /*prevlen*/ 3, /*data + tag*/ INT16_TAG, 0xE8, 0x03,
 
-                    /*prevlen*/ 4, /*data*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
+                    /*prevlen*/ 4, /*data + tag*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
 
-                    /*prevlen*/ 5, /*data*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
+                    /*prevlen*/ 5, /*data + tag*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
 
-                    /*prevlen*/ 6, /*data*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+                    /*prevlen*/ 6, /*data + tag*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
 
                     /*zl end*/ 0xFF,
                 ],
+            },
+            // string tests
+            TestData {
+                entries: vec![
+                    ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                    ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+                ],
+                #[rustfmt::skip]
+                expected:{
+                    let mut e = vec![
+                    /*zl bytes*/ 97, 0x00, 0x00, 0x00, /*zl tail*/ 23, 0x00, 0x00, 0x00, /*zl len*/ 2, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b01_000000, 0b0_1000110,
+                    ];
+                    e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                    e.push(0xFF);
+                    e
+                },
+            },
+            // long string test
+            TestData {
+                entries: vec![
+                    ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                    ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+                    ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
+                    ZipEntry::Str32BitsLength(Box::new([b'c'; 70_000])),
+                ],
+                #[rustfmt::skip]
+                expected:{
+                    let mut e = vec![
+                    /*zl bytes*/ 0x51, 0x23, 0x02, 0x00, /*zl tail*/ 0xD6, 0x11, 0x01, 0x00, /*zl len*/ 4, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b01_000000, 0b0_1000110,
+                    ];
+                    e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                    e.extend_from_slice(&[            // next entry
+                    /*prevlen*/ 73,
+                    /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                    ]);
+                    e.extend_from_slice(&[b'b'; 70_000]);   // add 70 000 bytes string
+                    e.extend_from_slice(&[                  // next entry
+                    /*prevlen*/ 0xFE, 0x76, 0x11, 0x01, 0x00,
+                    /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                    ]);
+                    e.extend_from_slice(&[b'c'; 70_000]);   // add 70 000 bytes string
+                    e.push(0xFF);
+                    e
+                },
             },
         ];
 
@@ -605,7 +680,13 @@ mod tests {
                 zl.push(entry);
             }
 
-            assert_eq!(test.expected, &zl.data);
+            assert_eq!(&test.expected, &zl.data);
+
+            println!(
+                "expected headers: {:?}\ngot headers: {:?}",
+                &test.expected[..10],
+                &zl.data[..10]
+            );
         }
     }
 
@@ -618,7 +699,7 @@ mod tests {
 
         struct TestData {
             entries: Vec<InsertEntry>,
-            expected: &'static [u8],
+            expected: Vec<u8>,
         }
 
         let tests = vec![
@@ -628,7 +709,7 @@ mod tests {
                     index: 0,
                 }],
                 #[rustfmt::skip]
-                expected: &[
+                expected: vec![
                     /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
                     /*zl end*/ 0xFF,
@@ -644,14 +725,146 @@ mod tests {
                         entry: ZipEntry::Int4BitsImmediate(4),
                         index: 0,
                     },
+                    InsertEntry {
+                        entry: ZipEntry::Int4BitsImmediate(3),
+                        index: 1,
+                    },
                 ],
                 #[rustfmt::skip]
-                expected: &[
-                    /*zl bytes*/ 15, 0, 0, 0, /*zl tail*/ 12, 0, 0, 0, /*zl len*/ 2, 0,
+                expected: vec![
+                    /*zl bytes*/ 17, 0, 0, 0, /*zl tail*/ 14, 0, 0, 0, /*zl len*/ 3, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0101,
+                    /*prevlen*/ 2, /*data + tag*/ 0b1111_0100,
                     /*prevlen*/ 2, /*data + tag*/ 0b1111_0110,
                     /*zl end*/ 0xFF,
                 ],
+            },
+            TestData {
+                entries: vec![
+                    InsertEntry {
+                        entry: ZipEntry::Int8(50),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int16(300),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int24(8388607),
+                        index: 1,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int32(2147483647),
+                        index: 2,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int64(5000000000),
+                        index: 1,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Int4BitsImmediate(4),
+                        index: 3,
+                    },
+                ],
+                #[rustfmt::skip]
+                expected: vec![
+                    /*zl bytes*/ 41, 0, 0, 0, /*zl tail*/ 37, 0, 0, 0, /*zl len*/ 6, 0,
+
+                    /*prevlen*/ 0, /*data + tag*/ INT16_TAG, 0x2C, 0x01,
+
+                    /*prevlen*/ 4, /*data + tag*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+
+                    /*prevlen*/ 10, /*data + tag*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
+
+                    /*prevlen*/ 5, /*data + tag*/ 0b1111_0101,
+
+                    /*prevlen*/ 2, /*data + tag*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
+
+                    /*prevlen*/ 6, /*data + tag*/ INT8_TAG, 50,
+
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![
+                    InsertEntry {
+                        entry: ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                        index: 0,
+                    },
+                ],
+                #[rustfmt::skip]
+                expected:{
+                    let mut e = vec![
+                    /*zl bytes*/ 0xD7, 0x11, 0x01, 0x00, /*zl tail*/ 0x60, 0x00, 0x00, 0x00, /*zl len*/ 3, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b01_000000, 0b0_1000110,
+                    ];
+                    e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                    e.extend_from_slice(&[            // next entry
+                    /*prevlen*/ 73,
+                    /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                    ]);
+                    e.extend_from_slice(&[b'b'; 70_000]);   // add 70 000 bytes string
+                    e.push(0xFF);
+                    e
+                },
+            },
+            TestData {
+                entries: vec![
+                    InsertEntry {
+                        entry: ZipEntry::Str32BitsLength(Box::new([b'c'; 70_000])),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+
+                        index: 0,
+                    },
+                    InsertEntry {
+                        entry: ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                        index: 0,
+                    },
+                ],
+                #[rustfmt::skip]
+                expected:{
+                    let mut e = vec![
+                    /*zl bytes*/ 0x51, 0x23, 0x02, 0x00, /*zl tail*/ 0xD6, 0x11, 0x01, 0x00, /*zl len*/ 4, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b01_000000, 0b0_1000110,
+                    ];
+                    e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                    e.extend_from_slice(&[            // next entry
+                    /*prevlen*/ 73,
+                    /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                    ]);
+                    e.extend_from_slice(&[b'b'; 70_000]);   // add 70 000 bytes string
+                    e.extend_from_slice(&[                  // next entry
+                    /*prevlen*/ 0xFE, 0x76, 0x11, 0x01, 0x00,
+                    /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                    ]);
+                    e.extend_from_slice(&[b'c'; 70_000]);   // add 70 000 bytes string
+                    e.push(0xFF);
+                    e
+                },
             },
         ];
 
@@ -661,7 +874,7 @@ mod tests {
                 zl.insert(entry.index, entry.entry);
             }
 
-            assert_eq!(test.expected, &zl.data);
+            assert_eq!(&test.expected, &zl.data);
         }
     }
 
