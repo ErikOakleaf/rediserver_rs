@@ -385,8 +385,6 @@ impl ZipList {
         // if there is a value after the deletion we have to modify it's prevlen
     }
 
-    fn update_prevlen(&mut self, index: usize, length: u32) {}
-
     fn delete_tail(&mut self) {
         let current_tail = self.get_zl_tail();
         println!("current tail = {}", current_tail);
@@ -401,6 +399,101 @@ impl ZipList {
         self.decrement_zl_bytes(bytes_deleted);
         self.set_zl_tail(new_tail);
         self.decrement_zl_len(1);
+    }
+
+    fn get(&mut self, index: usize) -> RedisObject {
+        let mut offset = self.get_index_offset(index);
+
+        // skip prevlen
+        if self.data[offset] == 0xFE {
+            offset += 5;
+        } else if self.data[offset] == 0xFF {
+            panic!("no hold up");
+        } else {
+            offset += 1;
+        }
+
+        let encoding_type = EncodingType::from_header(self.data[offset]);
+
+        match encoding_type {
+            EncodingType::Int4BitsImmediate => {
+                let num = (self.data[offset] & 0b0000_1111) - 1;
+                RedisObject::Int(num as i64)
+            }
+            EncodingType::Int8 => {
+                let num = self.data[offset + 1];
+                RedisObject::Int(num as i64)
+            }
+            EncodingType::Int16 => {
+                let b1 = self.data[offset + 1];
+                let b2 = self.data[offset + 2];
+                let num = i16::from_le_bytes([b1, b2]);
+                RedisObject::Int(num as i64)
+            }
+            EncodingType::Int24 => {
+                let b1 = self.data[offset + 1];
+                let b2 = self.data[offset + 2];
+                let b3 = self.data[offset + 3];
+                let num = Self::i24_from_le_bytes([b1, b2, b3]);
+                RedisObject::Int(num as i64)
+            }
+            EncodingType::Int32 => {
+                let b1 = self.data[offset + 1];
+                let b2 = self.data[offset + 2];
+                let b3 = self.data[offset + 3];
+                let b4 = self.data[offset + 4];
+                let num = i32::from_le_bytes([b1, b2, b3, b4]);
+                RedisObject::Int(num as i64)
+            }
+            EncodingType::Int64 => {
+                let b1 = self.data[offset + 1];
+                let b2 = self.data[offset + 2];
+                let b3 = self.data[offset + 3];
+                let b4 = self.data[offset + 4];
+                let b5 = self.data[offset + 5];
+                let b6 = self.data[offset + 6];
+                let b7 = self.data[offset + 7];
+                let b8 = self.data[offset + 8];
+                let num = i64::from_le_bytes([b1, b2, b3, b4, b5, b6, b7, b8]);
+                RedisObject::Int(num as i64)
+            }
+            // TODO you could create a method here to turn things instantly to a box like is
+            // elsewhere
+            EncodingType::Str6BitsLength => {
+                let str_len = (self.data[offset + 1] & 0b00_111111) as usize;
+                RedisObject::String(
+                    self.data[offset + 2..offset + 2 + str_len]
+                        .to_vec()
+                        .into_boxed_slice(),
+                )
+            }
+            EncodingType::Str14BitsLength => {
+                let b1 = self.data[offset + 1] & 0b00_111111;
+                let b2 = self.data[offset + 2];
+
+                let str_len = (((b1 as u16) << 8) | b2 as u16) as usize;
+
+                RedisObject::String(
+                    self.data[offset + 3..offset + 3 + str_len]
+                        .to_vec()
+                        .into_boxed_slice(),
+                )
+            }
+            EncodingType::Str32BitsLength => {
+                let b1 = self.data[offset + 1];
+                let b2 = self.data[offset + 2];
+                let b3 = self.data[offset + 3];
+                let b4 = self.data[offset + 4];
+
+                let str_len = u32::from_be_bytes([b1, b2, b3, b4]) as usize;
+
+                RedisObject::String(
+                    self.data[offset + 5..offset + 5 + str_len]
+                        .to_vec()
+                        .into_boxed_slice(),
+                )
+            }
+        }
     }
 
     // Helpers
@@ -575,6 +668,12 @@ impl ZipList {
     #[inline(always)]
     fn i24_to_le_bytes(num: i32) -> [u8; 3] {
         [num as u8, (num >> 8) as u8, (num >> 16) as u8]
+    }
+
+    #[inline(always)]
+    fn i24_from_le_bytes(num: [u8; 3]) -> i32 {
+        let value = (num[0] as i32) | ((num[1] as i32) << 8) | ((num[2] as i32) << 16);
+        (value << 8) >> 8
     }
 }
 
@@ -902,6 +1001,15 @@ mod tests {
                 expected: vec![
                     /*zl bytes*/ 14, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data*/ INT8_TAG, 100,
+                    /*zl end*/ 0xFF,
+                ],
+            },
+            TestData {
+                entries: vec![ZipEntry::Int8(-100)],
+                #[rustfmt::skip]
+                expected: vec![
+                    /*zl bytes*/ 14, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0, /*data*/ INT8_TAG, 0b10011100 /* -100 */,
                     /*zl end*/ 0xFF,
                 ],
             },
@@ -1422,6 +1530,114 @@ mod tests {
             }
 
             assert_eq!(&test.expected, &zl.data);
+        }
+
+        fn test_zip_list_get() {
+            struct TestData {
+                init_state: Vec<u8>,
+                get: Vec<usize>,
+                expected: Vec<RedisObject>,
+            }
+
+            let tests = vec![
+                TestData {
+                    #[rustfmt::skip]
+                    init_state: vec![
+                        /*zl bytes*/ 41, 0, 0, 0, /*zl tail*/ 30, 0, 0, 0, /*zl len*/ 6, 0,
+                        /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
+
+                        /*prevlen*/ 2, /*data + tag*/ INT8_TAG, 100,
+
+                        /*prevlen*/ 3, /*data + tag*/ INT16_TAG, 0xE8, 0x03,
+
+                        /*prevlen*/ 4, /*data + tag*/ INT24_TAG, 0xFF, 0xFF, 0x7F,
+
+                        /*prevlen*/ 5, /*data + tag*/ INT32_TAG, 0xFF, 0xFF, 0xFF, 0x7F,
+
+                        /*prevlen*/ 6, /*data + tag*/ INT64_TAG, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+
+                        /*zl end*/ 0xFF,
+                    ],
+                    get: vec![0, 1, 2, 3, 4, 5],
+                    expected: vec![
+                        RedisObject::Int(5),
+                        RedisObject::Int(100),
+                        RedisObject::Int(1000),
+                        RedisObject::Int(8388607),
+                        RedisObject::Int(2147483647),
+                        RedisObject::Int(5000000000),
+                    ],
+                },
+                TestData {
+                    #[rustfmt::skip]
+                    init_state: vec![
+                        /*zl bytes*/ 39, 0, 0, 0, /*zl tail*/ 28, 0, 0, 0, /*zl len*/ 5, 0,
+                        /*prevlen*/ 0, /*data + tag*/ INT8_TAG, 156,
+
+                        /*prevlen*/ 3, /*data + tag*/ INT16_TAG, 0x18, 0xFC,
+
+                        /*prevlen*/ 4, /*data + tag*/ INT24_TAG, 0x01, 0x00, 0x80,
+
+                        /*prevlen*/ 5, /*data + tag*/ INT32_TAG, 0x01, 0x00, 0x00, 0x80,
+
+                        /*prevlen*/ 6, /*data + tag*/ INT64_TAG, 0x00, 0x0E, 0xFA, 0xD5, 0xFE, 0xFF, 0xFF, 0xFF,
+
+                        /*zl end*/ 0xFF,
+                    ],
+                    get: vec![0, 1, 2, 3, 4],
+                    expected: vec![
+                        RedisObject::Int(-100),
+                        RedisObject::Int(-1000),
+                        RedisObject::Int(-8388607),
+                        RedisObject::Int(-2147483647),
+                        RedisObject::Int(-5000000000),
+                    ],
+                },
+                // get strings
+                TestData {
+                    #[rustfmt::skip]
+                    init_state:{
+                        let mut e = vec![
+                        /*zl bytes*/ 0x51, 0x23, 0x02, 0x00, /*zl tail*/ 0xD6, 0x11, 0x01, 0x00, /*zl len*/ 4, 0,
+                        /*prevlen*/ 0,
+                        /*tag*/ 0b00_001011,
+                        /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                        /*prevlen*/ 13,
+                        /*tag*/ 0b01_000000, 0b0_1000110,
+                        ];
+                        e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                        e.extend_from_slice(&[            // next entry
+                        /*prevlen*/ 73,
+                        /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                        ]);
+                        e.extend_from_slice(&[b'b'; 70_000]);   // add 70 000 bytes string
+                        e.extend_from_slice(&[                  // next entry
+                        /*prevlen*/ 0xFE, 0x76, 0x11, 0x01, 0x00,
+                        /*tag*/ STR32_TAG, 0x00, 0x01, 0x11, 0x70
+                        ]);
+                        e.extend_from_slice(&[b'c'; 70_000]);   // add 70 000 bytes string
+                        e.push(0xFF);
+                        e
+                    },
+                    get: vec![2, 3, 1, 0],
+                    expected: vec![
+                        RedisObject::String([b'b'; 70_000].to_vec().into_boxed_slice()),
+                        RedisObject::String([b'c'; 70_000].to_vec().into_boxed_slice()),
+                        RedisObject::String([b'a'; 70].to_vec().into_boxed_slice()),
+                        RedisObject::String(b"Hello World".to_vec().into_boxed_slice()),
+                    ],
+                },
+            ];
+
+            for test in tests {
+                let mut zl = ZipList::new();
+                zl.data = test.init_state;
+
+                for (index, expected) in test.get.iter().zip(test.expected) {
+                    let result = zl.get(*index);
+                    assert_eq!(expected, result);
+                }
+            }
         }
     }
 }
