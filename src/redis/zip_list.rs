@@ -284,11 +284,18 @@ impl ZipList {
     }
 
     fn delete(&mut self, index: usize) {
-        if index == self.get_zl_len() as usize {
+        if index == (self.get_zl_len() - 1) as usize {
             self.delete_tail();
+            println!("tail deletion");
+            return;
         }
 
         let mut offset = self.get_index_offset(index);
+
+        // figure out if the value before the tail has a long or short prevlen this will come in
+        // handy later
+        let before_tail_prevlen = self.data[self.get_index_offset(index) - 1];
+        let long_tail_prevlen = before_tail_prevlen == 0xFE;
 
         // skip the prevlen we don't want to touch this unless it is the tail i supose then it
         // would basically be a pop
@@ -336,20 +343,59 @@ impl ZipList {
                     u32::from_be_bytes([str_len_1, str_len_2, str_len_3, str_len_4]) as usize;
                 offset += 4;
                 offset += str_len;
+                println!("strlen is {}", str_len);
             }
+        }
+
+        // delete the prevlen
+
+        let long_after_prevlen;
+        if self.data[offset] == 0xFE {
+            offset += 5;
+            long_after_prevlen = true;
+        } else if self.data[offset] == 0xFF {
+            panic!("no hold up");
+        } else {
+            offset += 1;
+            long_after_prevlen = false;
         }
 
         self.data.drain(init_pos..offset);
 
         let bytes_deleted = offset - init_pos;
         self.decrement_zl_bytes(bytes_deleted as u32);
-        self.decrement_zl_tail(bytes_deleted as u32);
+        // depending on if the prevlen of the value behind it is larger or less than the current
+        // one we would have to shift the tail to point to the correct thing
+
+        let new_tail = {
+            if long_tail_prevlen && !long_after_prevlen {
+                println!("shorten prevlen");
+                self.get_zl_tail() - bytes_deleted as u32 - 4
+            } else if !long_tail_prevlen && long_after_prevlen {
+                println!("elongate prevlen");
+                self.get_zl_tail() - bytes_deleted as u32 + 4
+            } else {
+                self.get_zl_tail() - bytes_deleted as u32
+            }
+        };
+
+        self.set_zl_tail(new_tail);
+        self.decrement_zl_len(1);
+
+        // if there is a value after the deletion we have to modify it's prevlen
     }
+
+    fn update_prevlen(&mut self, index: usize, length: u32) {}
 
     fn delete_tail(&mut self) {
         let current_tail = self.get_zl_tail();
+        println!("current tail = {}", current_tail);
+        println!(
+            "current prevlen = {}",
+            Self::get_prevlen(&self.data[current_tail as usize..])
+        );
         let new_tail = current_tail - Self::get_prevlen(&self.data[current_tail as usize..]) as u32;
-        let bytes_deleted = self.get_zl_bytes() - self.get_zl_tail();
+        let bytes_deleted = self.get_zl_bytes() - self.get_zl_tail() - 1;
 
         self.data.drain(current_tail as usize..self.data.len() - 1);
         self.decrement_zl_bytes(bytes_deleted);
@@ -1192,17 +1238,18 @@ mod tests {
         }
 
         let tests = vec![
+            // int tests
             TestData {
                 #[rustfmt::skip]
                 init_state: vec![
-                    /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 6, 0,
+                    /*zl bytes*/ 13, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 1, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
                     /*zl end*/ 0xFF,
                 ],
                 deletions: vec![0],
                 #[rustfmt::skip]
                 expected: vec![
-                    /*zl bytes*/ 11, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 4, 0,
+                    /*zl bytes*/ 11, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 0, 0,
                     /*zl end*/ 0xFF,
 
                 ],
@@ -1228,7 +1275,7 @@ mod tests {
                 deletions: vec![1, 4],
                 #[rustfmt::skip]
                 expected: vec![
-                    /*zl bytes*/ 27, 0, 0, 0, /*zl tail*/ 21, 0, 0, 0, /*zl len*/ 4, 0,
+                    /*zl bytes*/ 28, 0, 0, 0, /*zl tail*/ 21, 0, 0, 0, /*zl len*/ 4, 0,
                     /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
 
                     /*prevlen*/ 2, /*data + tag*/ INT16_TAG, 0xE8, 0x03,
@@ -1259,11 +1306,69 @@ mod tests {
 
                     /*zl end*/ 0xFF,
                 ],
-                deletions: vec![3, 4, 0, 1, 1, 0],
+                deletions: vec![3, 4, 0, 1, 0, 0],
                 #[rustfmt::skip]
                 expected: vec![
-                    /*zl bytes*/ 11, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 4, 0,
+                    /*zl bytes*/ 11, 0, 0, 0, /*zl tail*/ 10, 0, 0, 0, /*zl len*/ 0, 0,
                     /*zl end*/ 0xFF,
+                ],
+            },
+            // string tests
+            TestData {
+                #[rustfmt::skip]
+                init_state:{
+                    let mut e = vec![
+                    /*zl bytes*/ 100, 0x00, 0x00, 0x00, /*zl tail*/ 96, 0x00, 0x00, 0x00, /*zl len*/ 3, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b01_000000, 0b0_1000110,
+                    ];
+                    e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
+                    e.extend_from_slice(&[            // next entry
+                    /*prevlen*/ 73,
+                    /*tag + data*/ INT8_TAG, 5,
+                    ]);
+                    e.push(0xFF);
+                    e
+                },
+                deletions: vec![1, 1],
+                #[rustfmt::skip]
+                expected: {
+                    let mut e = vec![
+                    /*zl bytes*/ 24, 0x00, 0x00, 0x00, /*zl tail*/ 10, 0x00, 0x00, 0x00, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    ];
+                    e.push(0xFF);
+                    e
+                },
+            },
+            TestData {
+                #[rustfmt::skip]
+                init_state: vec![
+                    /*zl bytes*/ 50, 0x00, 0x00, 0x00, /*zl tail*/ 36, 0x00, 0x00, 0x00, /*zl len*/ 3, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*prevlen*/ 13,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*end*/ 0xFF
+                ],
+                deletions: vec![1, 1],
+                #[rustfmt::skip]
+                expected:vec![
+                    /*zl bytes*/ 24, 0x00, 0x00, 0x00, /*zl tail*/ 10, 0x00, 0x00, 0x00, /*zl len*/ 1, 0,
+                    /*prevlen*/ 0,
+                    /*tag*/ 0b00_001011,
+                    /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
+                    /*end*/ 0xFF
                 ],
             },
             TestData {
@@ -1291,11 +1396,11 @@ mod tests {
                     e.push(0xFF);
                     e
                 },
-                deletions: vec![2, 3],
+                deletions: vec![2, 2],
                 #[rustfmt::skip]
-                expected: { 
+                expected: {
                     let mut e = vec![
-                    /*zl bytes*/ 97, 0x00, 0x00, 0x00, /*zl tail*/ 0x26, 0x00, 0x00, 0x00, /*zl len*/ 4, 0,
+                    /*zl bytes*/ 97, 0x00, 0x00, 0x00, /*zl tail*/ 23, 0x00, 0x00, 0x00, /*zl len*/ 2, 0,
                     /*prevlen*/ 0,
                     /*tag*/ 0b00_001011,
                     /*data*/ 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x20, 0x57, 0x6F, 0x72, 0x6C, 0x64,
@@ -1305,8 +1410,18 @@ mod tests {
                     e.extend_from_slice(&[b'a'; 70]); // add 70 bytes string
                     e.push(0xFF);
                     e
-                }
+                },
             },
         ];
+
+        for test in tests {
+            let mut zl = ZipList::new();
+            zl.data = test.init_state;
+            for index in test.deletions {
+                zl.delete(index);
+            }
+
+            assert_eq!(&test.expected, &zl.data);
+        }
     }
 }
