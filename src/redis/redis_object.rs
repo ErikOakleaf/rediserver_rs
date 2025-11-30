@@ -1,9 +1,10 @@
-use std::alloc::{self, Layout};
+use crate::redis::zip_list::ZipList;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RedisObject {
     String(Box<[u8]>),
     Int(i64),
+    List(ZipList), // lists are just ziplists for now quicklists down the line
 }
 
 impl RedisObject {
@@ -15,6 +16,7 @@ impl RedisObject {
         match self {
             RedisObject::String(s) => s.to_vec(),
             RedisObject::Int(i) => i.to_string().as_bytes().to_vec(),
+            _ => todo!("todo ziplist to bytes"),
         }
     }
 

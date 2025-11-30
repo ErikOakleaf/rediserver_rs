@@ -1,4 +1,7 @@
-use crate::{commands::RedisCommand, error::{CommandError, ProtocolError}};
+use crate::{
+    commands::RedisCommand,
+    error::{CommandError, ProtocolError},
+};
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ParseState {
@@ -283,7 +286,9 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
         }
         b"DEL" | b"del" | b"Del" => {
             if args.is_empty() {
-                return Err(CommandError::WrongNumberOfArguments { cmd: command_name.to_vec() });
+                return Err(CommandError::WrongNumberOfArguments {
+                    cmd: command_name.to_vec(),
+                });
             }
             Ok(RedisCommand::Del {
                 keys: args.iter().map(|a| a.as_slice()).collect(),
@@ -296,7 +301,34 @@ pub fn convert_command_parse_state_to_redis_command<'a>(
                 value: args[1].as_slice(),
             })
         }
-        _ => Err(CommandError::UnknownCommand{
+        // lists
+        b"LPUSH" | b"lpush" | b"LPush" => {
+            check_arity_error(2, args.len(), command_name.as_slice())?;
+            Ok(RedisCommand::LPush {
+                key: args[0].as_slice(),
+                value: args[1].as_slice(),
+            })
+        }
+        b"RPUSH" | b"rpush" | b"RPush" => {
+            check_arity_error(2, args.len(), command_name.as_slice())?;
+            Ok(RedisCommand::RPush {
+                key: args[0].as_slice(),
+                value: args[1].as_slice(),
+            })
+        }
+        b"LPOP" | b"lpop" | b"LPop" => {
+            check_arity_error(1, args.len(), command_name.as_slice())?;
+            Ok(RedisCommand::LPop {
+                key: args[0].as_slice(),
+            })
+        }
+        b"RPOP" | b"rpop" | b"RPop" => {
+            check_arity_error(1, args.len(), command_name.as_slice())?;
+            Ok(RedisCommand::RPop {
+                key: args[0].as_slice(),
+            })
+        }
+        _ => Err(CommandError::UnknownCommand {
             cmd: command_name.to_vec(),
         }),
     }
@@ -684,17 +716,26 @@ mod tests {
                     current_string: 2,
                     state: ParseState::Complete,
                 },
-                expected_command: RedisCommand::Del { keys: vec![b"hello"] },
+                expected_command: RedisCommand::Del {
+                    keys: vec![b"hello"],
+                },
             },
             TestData {
                 parse_state: CommandParseState {
                     command_name: Some(b"DEL".to_vec()),
-                    args: vec![b"hello".to_vec(), b"world".to_vec(), b"foo".to_vec(), b"bar".to_vec()],
+                    args: vec![
+                        b"hello".to_vec(),
+                        b"world".to_vec(),
+                        b"foo".to_vec(),
+                        b"bar".to_vec(),
+                    ],
                     expected_strings: 5,
                     current_string: 5,
                     state: ParseState::Complete,
                 },
-                expected_command: RedisCommand::Del { keys: vec![b"hello", b"world", b"foo", b"bar"] },
+                expected_command: RedisCommand::Del {
+                    keys: vec![b"hello", b"world", b"foo", b"bar"],
+                },
             },
             TestData {
                 parse_state: CommandParseState {

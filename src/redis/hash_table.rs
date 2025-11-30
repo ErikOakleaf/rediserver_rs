@@ -63,6 +63,21 @@ impl HashDict {
         }
     }
 
+    pub fn lookup_mut(&mut self, key: &[u8]) -> Option<&mut RedisObject> {
+        self.try_finish_resizing();
+
+        match &mut self.state {
+            ResizeState::NotResizing => self.main_ht.lookup_mut(key),
+            ResizeState::Resizing {
+                new_ht,
+                resizing_pos,
+            } => {
+                Self::help_resizing(&mut self.main_ht, new_ht, resizing_pos, REHASHING_SPEED);
+                new_ht.lookup_mut(key).or_else(|| self.main_ht.lookup_mut(key))
+            }
+        }
+    }
+
     pub fn delete(&mut self, key: &[u8]) -> bool {
         self.try_finish_resizing();
 
@@ -200,6 +215,20 @@ impl HashTable {
         }
     }
 
+    fn lookup_mut(&mut self, key: &[u8]) -> Option<&mut RedisObject> {
+        let hash = hash_bytes(key);
+        let pos = hash as usize & self.mask;
+
+        let mut current = self.table[pos].as_deref_mut()?;
+
+        loop {
+            if current.hash == hash && current.key.as_ref() == key {
+                return Some(&mut current.value);
+            }
+            current = current.next.as_deref_mut()?;
+        }
+    }
+
     fn delete(&mut self, key: &[u8]) -> bool {
         let hash = hash_bytes(key);
         let pos = hash as usize & self.mask;
@@ -247,7 +276,19 @@ pub struct HashNode {
 }
 
 impl HashNode {
-    pub fn new(key: &[u8], value: &[u8]) -> HashNode {
+    pub fn new_from_object(key: &[u8], value: RedisObject) -> HashNode {
+        let node_key = slice_to_box(key);
+        let node_hash = hash_bytes(key);
+
+        HashNode {
+            key: node_key,
+            value: value,
+            next: None,
+            hash: node_hash,
+        }
+    }
+
+    pub fn new_from_bytes(key: &[u8], value: &[u8]) -> HashNode {
         let node_key = slice_to_box(key);
         let node_value = RedisObject::new_from_bytes(value);
         let node_hash = hash_bytes(key);
@@ -329,17 +370,17 @@ mod tests {
             TestData {
                 key: b"key1",
                 value: b"value1",
-                expected: HashNode::new(b"key1", b"value1"),
+                expected: HashNode::new_from_bytes(b"key1", b"value1"),
             },
             TestData {
                 key: b"key2",
                 value: b"value2",
-                expected: HashNode::new(b"key2", b"value2"),
+                expected: HashNode::new_from_bytes(b"key2", b"value2"),
             },
             TestData {
                 key: b"key3",
                 value: b"value3",
-                expected: HashNode::new(b"key3", b"value3"),
+                expected: HashNode::new_from_bytes(b"key3", b"value3"),
             },
         ];
 
@@ -347,7 +388,7 @@ mod tests {
 
         // insert nodes into hash table
         for test in &tests {
-            ht.insert(Box::new(HashNode::new(test.key, test.value)));
+            ht.insert(Box::new(HashNode::new_from_bytes(test.key, test.value)));
         }
 
         assert_eq!(ht.used, 3);
@@ -380,24 +421,24 @@ mod tests {
             TestData {
                 key: b"key1",
                 value: b"value1",
-                expected: HashNode::new(b"key1", b"value1"),
+                expected: HashNode::new_from_bytes(b"key1", b"value1"),
             },
             TestData {
                 key: b"key1",
                 value: b"value2",
-                expected: HashNode::new(b"key1", b"value2"),
+                expected: HashNode::new_from_bytes(b"key1", b"value2"),
             },
             TestData {
                 key: b"key1",
                 value: b"value3",
-                expected: HashNode::new(b"key1", b"value3"),
+                expected: HashNode::new_from_bytes(b"key1", b"value3"),
             },
         ];
 
         let mut ht = HashTable::new(128);
 
         for test in tests {
-            ht.insert(Box::new(HashNode::new(test.key, test.value)));
+            ht.insert(Box::new(HashNode::new_from_bytes(test.key, test.value)));
             let result = ht.lookup(test.key).unwrap();
             assert_eq!(&test.expected.value, result);
             assert_eq!(ht.used, 1);
@@ -413,7 +454,10 @@ mod tests {
         loop {
             let key_str = format!("key{}", inserted);
             let value_str = format!("value{}", inserted);
-            let node = Box::new(HashNode::new(key_str.as_bytes(), value_str.as_bytes()));
+            let node = Box::new(HashNode::new_from_bytes(
+                key_str.as_bytes(),
+                value_str.as_bytes(),
+            ));
             hash_dict.insert(node);
             inserted += 1;
 
