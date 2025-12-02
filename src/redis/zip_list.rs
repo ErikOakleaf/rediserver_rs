@@ -422,7 +422,7 @@ impl ZipList {
                 RedisObject::Int(num as i64)
             }
             EncodingType::Int8 => {
-                let num = self.data[offset + 1];
+                let num = self.data[offset + 1] as i8;
                 RedisObject::Int(num as i64)
             }
             EncodingType::Int16 => {
@@ -461,21 +461,21 @@ impl ZipList {
             // TODO you could create a method here to turn things instantly to a box like is
             // elsewhere
             EncodingType::Str6BitsLength => {
-                let str_len = (self.data[offset + 1] & 0b00_111111) as usize;
+                let str_len = (self.data[offset] & 0b00_111111) as usize;
                 RedisObject::String(
-                    self.data[offset + 2..offset + 2 + str_len]
+                    self.data[offset + 1..offset + 1 + str_len]
                         .to_vec()
                         .into_boxed_slice(),
                 )
             }
             EncodingType::Str14BitsLength => {
-                let b1 = self.data[offset + 1] & 0b00_111111;
-                let b2 = self.data[offset + 2];
+                let b1 = self.data[offset] & 0b00_111111;
+                let b2 = self.data[offset + 1];
 
                 let str_len = (((b1 as u16) << 8) | b2 as u16) as usize;
 
                 RedisObject::String(
-                    self.data[offset + 3..offset + 3 + str_len]
+                    self.data[offset + 2..offset + 2 + str_len]
                         .to_vec()
                         .into_boxed_slice(),
                 )
@@ -1612,17 +1612,19 @@ mod tests {
 
             assert_eq!(&test.expected, &zl.data);
         }
+    }
 
-        fn test_zip_list_get() {
-            struct TestData {
-                init_state: Vec<u8>,
-                get: Vec<usize>,
-                expected: Vec<RedisObject>,
-            }
+    #[test]
+    fn test_zip_list_get() {
+        struct TestData {
+            init_state: Vec<u8>,
+            get: Vec<usize>,
+            expected: Vec<RedisObject>,
+        }
 
-            let tests = vec![
-                TestData {
-                    #[rustfmt::skip]
+        let tests = vec![
+            TestData {
+                #[rustfmt::skip]
                     init_state: vec![
                         /*zl bytes*/ 41, 0, 0, 0, /*zl tail*/ 30, 0, 0, 0, /*zl len*/ 6, 0,
                         /*prevlen*/ 0, /*data + tag*/ 0b1111_0110,
@@ -1639,18 +1641,18 @@ mod tests {
 
                         /*zl end*/ 0xFF,
                     ],
-                    get: vec![0, 1, 2, 3, 4, 5],
-                    expected: vec![
-                        RedisObject::Int(5),
-                        RedisObject::Int(100),
-                        RedisObject::Int(1000),
-                        RedisObject::Int(8388607),
-                        RedisObject::Int(2147483647),
-                        RedisObject::Int(5000000000),
-                    ],
-                },
-                TestData {
-                    #[rustfmt::skip]
+                get: vec![0, 1, 2, 3, 4, 5],
+                expected: vec![
+                    RedisObject::Int(5),
+                    RedisObject::Int(100),
+                    RedisObject::Int(1000),
+                    RedisObject::Int(8388607),
+                    RedisObject::Int(2147483647),
+                    RedisObject::Int(5000000000),
+                ],
+            },
+            TestData {
+                #[rustfmt::skip]
                     init_state: vec![
                         /*zl bytes*/ 39, 0, 0, 0, /*zl tail*/ 28, 0, 0, 0, /*zl len*/ 5, 0,
                         /*prevlen*/ 0, /*data + tag*/ INT8_TAG, 156,
@@ -1665,18 +1667,18 @@ mod tests {
 
                         /*zl end*/ 0xFF,
                     ],
-                    get: vec![0, 1, 2, 3, 4],
-                    expected: vec![
-                        RedisObject::Int(-100),
-                        RedisObject::Int(-1000),
-                        RedisObject::Int(-8388607),
-                        RedisObject::Int(-2147483647),
-                        RedisObject::Int(-5000000000),
-                    ],
-                },
-                // get strings
-                TestData {
-                    #[rustfmt::skip]
+                get: vec![0, 1, 2, 3, 4],
+                expected: vec![
+                    RedisObject::Int(-100),
+                    RedisObject::Int(-1000),
+                    RedisObject::Int(-8388607),
+                    RedisObject::Int(-2147483647),
+                    RedisObject::Int(-5000000000),
+                ],
+            },
+            // get strings
+            TestData {
+                #[rustfmt::skip]
                     init_state:{
                         let mut e = vec![
                         /*zl bytes*/ 0x51, 0x23, 0x02, 0x00, /*zl tail*/ 0xD6, 0x11, 0x01, 0x00, /*zl len*/ 4, 0,
@@ -1700,24 +1702,23 @@ mod tests {
                         e.push(0xFF);
                         e
                     },
-                    get: vec![2, 3, 1, 0],
-                    expected: vec![
-                        RedisObject::String([b'b'; 70_000].to_vec().into_boxed_slice()),
-                        RedisObject::String([b'c'; 70_000].to_vec().into_boxed_slice()),
-                        RedisObject::String([b'a'; 70].to_vec().into_boxed_slice()),
-                        RedisObject::String(b"Hello World".to_vec().into_boxed_slice()),
-                    ],
-                },
-            ];
+                get: vec![2, 3, 1, 0],
+                expected: vec![
+                    RedisObject::String([b'b'; 70_000].to_vec().into_boxed_slice()),
+                    RedisObject::String([b'c'; 70_000].to_vec().into_boxed_slice()),
+                    RedisObject::String([b'a'; 70].to_vec().into_boxed_slice()),
+                    RedisObject::String(b"Hello World".to_vec().into_boxed_slice()),
+                ],
+            },
+        ];
 
-            for test in tests {
-                let mut zl = ZipList::new();
-                zl.data = test.init_state;
+        for test in tests {
+            let mut zl = ZipList::new();
+            zl.data = test.init_state;
 
-                for (index, expected) in test.get.iter().zip(test.expected) {
-                    let result = zl.get(*index);
-                    assert_eq!(expected, result);
-                }
+            for (index, expected) in test.get.iter().zip(test.expected) {
+                let result = zl.get(*index);
+                assert_eq!(expected, result);
             }
         }
     }

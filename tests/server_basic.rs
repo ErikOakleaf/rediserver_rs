@@ -580,10 +580,10 @@ fn test_lists() -> std::io::Result<()> {
             command: b"*3\r\n$5\r\nLPUSH\r\n$2\r\nls\r\n$5\r\nworld\r\n",
             expected: b"+OK\r\n",
         },
-        // TestData {
-        //     command: b"*2\r\n$4\r\nLPOP\r\n$2\r\nls\r\n",
-        //     expected: b"$5\r\nworld\r\n",
-        // },
+        TestData {
+            command: b"*2\r\n$4\r\nLPOP\r\n$2\r\nls\r\n",
+            expected: b"$5\r\nworld\r\n",
+        },
         // TestData {
         //     command: b"*3\r\n$4\r\nLPOP\r\n$2\r\nls\r\n",
         //     expected: b"$5\r\nhello\r\n",
