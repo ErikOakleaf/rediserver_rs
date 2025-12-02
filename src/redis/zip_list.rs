@@ -498,7 +498,7 @@ impl ZipList {
     }
 
     pub fn pop_tail(&mut self) -> RedisObject {
-        let object = self.get(self.get_zl_len() as usize);
+        let object = self.get((self.get_zl_len() - 1) as usize);
         self.delete_tail();
 
         object

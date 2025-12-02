@@ -127,12 +127,10 @@ impl Redis {
                             let response = value.to_resp();
                             RedisResult::BulkString(response)
                         }
-                        // this is not the panic
                         _ => todo!("implement error stuff"),
                     },
                     None => {
                         todo!("implement error stuff here");
-                        // this is not the panic
                     }
                 }
             }
@@ -145,9 +143,11 @@ impl Redis {
                             let response = value.to_resp();
                             RedisResult::BulkString(response)
                         }
+                        // panic is not here
                         _ => todo!("implement error stuff"),
                     },
                     None => {
+                        // panic is not here
                         todo!("implement error stuff here");
                     }
                 }
