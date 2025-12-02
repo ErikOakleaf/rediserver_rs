@@ -534,6 +534,50 @@ mod tests {
                 },
             },
             TestData {
+                buffer: b"*3\r\n$5\r\nLPUSH\r\n$5\r\nhello\r\n$5\r\nworld\r\n",
+                expected_position: 37,
+                expected_state: CommandParseState {
+                    command_name: Some(b"LPUSH".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: b"*3\r\n$5\r\nRPUSH\r\n$5\r\nhello\r\n$5\r\nworld\r\n",
+                expected_position: 37,
+                expected_state: CommandParseState {
+                    command_name: Some(b"RPUSH".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 3,
+                    current_string: 3,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: b"*2\r\n$4\r\nLPOP\r\n$5\r\nhello\r\n",
+                expected_position: 25,
+                expected_state: CommandParseState {
+                    command_name: Some(b"LPOP".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
+                buffer: b"*2\r\n$4\r\nRPOP\r\n$5\r\nhello\r\n",
+                expected_position: 25,
+                expected_state: CommandParseState {
+                    command_name: Some(b"RPOP".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+            },
+            TestData {
                 buffer: b"*3\r\n$3\r\nSET\r\n$5\r\nhello\r\n$5\r\nworld",
                 expected_position: 24,
                 expected_state: CommandParseState {
@@ -748,6 +792,56 @@ mod tests {
                 expected_command: RedisCommand::Set {
                     key: b"hello",
                     value: b"world",
+                },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"LPUSH".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::LPush {
+                    key: b"hello",
+                    value: b"world",
+                },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"RPUSH".to_vec()),
+                    args: vec![b"hello".to_vec(), b"world".to_vec()],
+                    expected_strings: 2,
+                    current_string: 2,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::RPush {
+                    key: b"hello",
+                    value: b"world",
+                },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"LPOP".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 1,
+                    current_string: 1,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::LPop {
+                    key: b"hello",
+                },
+            },
+            TestData {
+                parse_state: CommandParseState {
+                    command_name: Some(b"RPOP".to_vec()),
+                    args: vec![b"hello".to_vec()],
+                    expected_strings: 1,
+                    current_string: 1,
+                    state: ParseState::Complete,
+                },
+                expected_command: RedisCommand::RPop {
+                    key: b"hello",
                 },
             },
         ];

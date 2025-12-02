@@ -548,3 +548,62 @@ fn test_errors_and_successful_commands() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[test]
+#[serial]
+fn test_lists() -> std::io::Result<()> {
+    // spawn server in another thread
+
+    thread::spawn(|| {
+        let mut server = redis::server::Server::new(0, 1234).unwrap();
+        server.run().unwrap();
+    });
+
+    // give server a moment to start
+    thread::sleep(Duration::from_millis(200));
+
+    // connect socket to server
+    let mut stream = TcpStream::connect("127.0.0.1:1234")?;
+
+    struct TestData {
+        command: &'static [u8],
+        expected: &'static [u8],
+    }
+
+    let tests = vec![
+        //basic functionality
+        TestData {
+            command: b"*3\r\n$5\r\nLPUSH\r\n$2\r\nls\r\n$5\r\nhello\r\n",
+            expected: b"+OK\r\n",
+        },
+        TestData {
+            command: b"*3\r\n$5\r\nLPUSH\r\n$2\r\nls\r\n$5\r\nworld\r\n",
+            expected: b"+OK\r\n",
+        },
+        // TestData {
+        //     command: b"*2\r\n$4\r\nLPOP\r\n$2\r\nls\r\n",
+        //     expected: b"$5\r\nworld\r\n",
+        // },
+        // TestData {
+        //     command: b"*3\r\n$4\r\nLPOP\r\n$2\r\nls\r\n",
+        //     expected: b"$5\r\nhello\r\n",
+        // },
+    ];
+
+    for test in tests {
+        stream.write_all(test.command)?;
+
+        let mut buf = vec![0u8; test.expected.len()];
+        stream.read_exact(&mut buf)?;
+
+        assert_eq!(
+            test.expected,
+            buf.as_slice(),
+            "expected {:?}\ngot: {:?}",
+            test.expected,
+            buf.as_slice(),
+        );
+    }
+
+    Ok(())
+}
