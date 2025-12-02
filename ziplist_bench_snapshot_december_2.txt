@@ -1,0 +1,10 @@
+ziplist_push/all_types              time:   [1.4516 µs 1.4644 µs 1.4786 µs]
+
+ziplist_insert/all_types_at_middle  time:   [1.5184 µs 1.5255 µs 1.5335 µs]
+
+ziplist_delete/delete               time:   [1.8501 µs 1.8684 µs 1.8902 µs]
+
+ziplist_delete/delete_tail          time:   [119.61 ns 120.49 ns 121.90 ns]
+
+ziplist_get/all_types               time:   [777.21 ns 781.14 ns 785.08 ns]
+

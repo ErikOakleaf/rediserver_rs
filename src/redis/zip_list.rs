@@ -150,7 +150,6 @@ impl ZipList {
         if self.data[offset] < 0xFE {
             offset += 1;
             current_prevlen = 1;
-            println!("skipping prevlen 1 byte")
         } else if self.data[offset] == 0xFE {
             offset += 5;
             current_prevlen = 2;
@@ -171,7 +170,6 @@ impl ZipList {
 
         // shift to make space in the array
         self.shift_bytes(offset, total_len);
-        println!("shifting bytes at {} by {}", offset, total_len);
 
         // insert the thing
         match value {
@@ -284,10 +282,9 @@ impl ZipList {
         self.increment_zl_len(1);
     }
 
-    fn delete(&mut self, index: usize) {
+    pub fn delete(&mut self, index: usize) {
         if index == (self.get_zl_len() - 1) as usize {
             self.delete_tail();
-            println!("tail deletion");
             return;
         }
 
@@ -386,13 +383,8 @@ impl ZipList {
         // if there is a value after the deletion we have to modify it's prevlen
     }
 
-    fn delete_tail(&mut self) {
+    pub fn delete_tail(&mut self) {
         let current_tail = self.get_zl_tail();
-        println!("current tail = {}", current_tail);
-        println!(
-            "current prevlen = {}",
-            Self::get_prevlen(&self.data[current_tail as usize..])
-        );
         let new_tail = current_tail - Self::get_prevlen(&self.data[current_tail as usize..]) as u32;
         let bytes_deleted = self.get_zl_bytes() - self.get_zl_tail() - 1;
 
@@ -402,7 +394,7 @@ impl ZipList {
         self.decrement_zl_len(1);
     }
 
-    fn get(&mut self, index: usize) -> RedisObject {
+    pub fn get(&mut self, index: usize) -> RedisObject {
         let mut offset = self.get_index_offset(index);
 
         // skip prevlen

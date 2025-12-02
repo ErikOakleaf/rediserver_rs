@@ -8,6 +8,11 @@ libc = "0.2.177"
 
 [dev-dependencies]
 serial_test = "3.2.0"
+criterion = "0.8.0"
+
+[[bench]]
+name = "ziplist_benches"
+harness = false
 
 [[bin]]
 name = "server"
