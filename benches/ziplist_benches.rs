@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use redis::redis::zip_list::{ZipEntry, ZipList};
 use std::hint::black_box;
 

@@ -561,54 +561,66 @@ impl ZipList {
 
     #[inline(always)]
     fn get_zl_bytes(&self) -> u32 {
-        let bytes: [u8; 4] = self.data[0..4]
-            .try_into()
-            .expect("Slice length mismatch for u32 conversion");
+        debug_assert!(self.data.len() >= 10);
 
-        u32::from_le_bytes(bytes)
+        unsafe {
+            let ptr = self.data.as_ptr() as *const u32;
+            u32::from_le(std::ptr::read_unaligned(ptr))
+        }
     }
 
     #[inline(always)]
     fn get_zl_tail(&self) -> u32 {
-        let bytes: [u8; 4] = self.data[4..8]
-            .try_into()
-            .expect("Slice length mismatch for u32 conversion");
+        debug_assert!(self.data.len() >= 10);
 
-        u32::from_le_bytes(bytes)
+        unsafe {
+            let byte_ptr = self.data.as_ptr();
+            let ptr = byte_ptr.add(4) as *const u32;
+            u32::from_le(std::ptr::read_unaligned(ptr))
+        }
     }
 
     #[inline(always)]
     fn get_zl_len(&self) -> u16 {
-        let bytes: [u8; 2] = self.data[8..10]
-            .try_into()
-            .expect("Slice length mismatch for u16 conversion");
+        debug_assert!(self.data.len() >= 10);
 
-        u16::from_le_bytes(bytes)
+        unsafe {
+            let byte_ptr = self.data.as_ptr();
+            let ptr = byte_ptr.add(8) as *const u16;
+            u16::from_le(std::ptr::read_unaligned(ptr))
+        }
     }
 
     #[inline(always)]
     fn set_zl_bytes(&mut self, new_value: u32) {
-        let bytes = new_value.to_le_bytes();
-        self.data[0] = bytes[0];
-        self.data[1] = bytes[1];
-        self.data[2] = bytes[2];
-        self.data[3] = bytes[3];
+        debug_assert!(self.data.len() >= 10);
+
+        unsafe {
+            let ptr = self.data.as_mut_ptr() as *mut u32;
+            std::ptr::write_unaligned(ptr, new_value.to_le());
+        }
     }
 
     #[inline(always)]
     fn set_zl_tail(&mut self, new_value: u32) {
-        let bytes = new_value.to_le_bytes();
-        self.data[4] = bytes[0];
-        self.data[5] = bytes[1];
-        self.data[6] = bytes[2];
-        self.data[7] = bytes[3];
+        debug_assert!(self.data.len() >= 10);
+
+        unsafe {
+            let byte_ptr = self.data.as_mut_ptr();
+            let ptr = byte_ptr.add(4) as *mut u32;
+            std::ptr::write_unaligned(ptr, new_value.to_le());
+        }
     }
 
     #[inline(always)]
     fn set_zl_len(&mut self, new_value: u16) {
-        let bytes = new_value.to_le_bytes();
-        self.data[8] = bytes[0];
-        self.data[9] = bytes[1];
+        debug_assert!(self.data.len() >= 10);
+
+        unsafe {
+            let byte_ptr = self.data.as_mut_ptr();
+            let ptr = byte_ptr.add(8) as *mut u16;
+            std::ptr::write_unaligned(ptr, new_value.to_le());
+        }
     }
 
     #[inline(always)]
