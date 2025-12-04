@@ -38,96 +38,33 @@ impl ZipList {
         ZipList { data: data }
     }
 
-    pub fn push(&mut self, value: ZipEntry) {
+    pub fn push(&mut self, entry: ZipEntry) {
         let prevlen = self.get_tail_prevlen();
 
-        // Remove 0xFF
-        self.data.pop();
-
         // Set tail to point to the new value
-        self.set_zl_tail(self.data.len() as u32);
+        self.set_zl_tail((self.data.len() - 1) as u32);
         self.increment_zl_len(1);
 
-        // add prevlen
-        if prevlen < 254 {
-            self.data.push(prevlen as u8);
-            self.increment_zl_bytes(1);
-        } else {
-            self.data.push(0xFE);
-            self.data.extend_from_slice(&prevlen.to_le_bytes());
-            self.increment_zl_bytes(5);
+        let prevlen_len = { if prevlen < 254 { 1 } else { 5 } };
+        let entry_len = entry.amount_bytes();
+        let entry_total_len = prevlen_len + entry_len;
+
+        unsafe {
+            self.extend_bytes(entry_total_len);
+
+            let mut write_ptr = self.data.as_mut_ptr().add(self.data.len() - entry_total_len - 1);
+            Self::write_prevlen(write_ptr, prevlen);
+
+            write_ptr = write_ptr.add(prevlen_len);
+
+            Self::write_entry(write_ptr, entry);
+
+            write_ptr = write_ptr.add(entry_len);
+
+            *write_ptr = 0xFF;
         }
 
-        match value {
-            ZipEntry::Int4BitsImmediate(i) => {
-                let num = (i + 1) | 0b1111_0000;
-                self.data.push(num);
-                self.increment_zl_bytes(1);
-            }
-            ZipEntry::Int8(i) => {
-                self.data.push(INT8_TAG);
-                self.data.push(i as u8);
-                self.increment_zl_bytes(2);
-            }
-            ZipEntry::Int16(i) => {
-                self.data.push(INT16_TAG);
-                self.data.extend_from_slice(&i.to_le_bytes());
-                self.increment_zl_bytes(3);
-            }
-            ZipEntry::Int24(i) => {
-                self.data.push(INT24_TAG);
-                self.data.extend_from_slice(&Self::i24_to_le_bytes(i));
-                self.increment_zl_bytes(4);
-            }
-            ZipEntry::Int32(i) => {
-                self.data.push(INT32_TAG);
-                self.data.extend_from_slice(&i.to_le_bytes());
-                self.increment_zl_bytes(5);
-            }
-            ZipEntry::Int64(i) => {
-                self.data.push(INT64_TAG);
-                self.data.extend_from_slice(&i.to_le_bytes());
-                self.increment_zl_bytes(9);
-            }
-            ZipEntry::Str6BitsLength(s) => {
-                // length and tag 00 encoded here
-                let str_tag = (s.len() as u8) & 0b00111111;
-                self.data.push(str_tag);
-                self.data.extend_from_slice(&s);
-
-                let str_total_len = (s.len() + 1) as u32;
-                self.increment_zl_bytes(str_total_len);
-            }
-            ZipEntry::Str14BitsLength(s) => {
-                // this is ugly right now
-                let str_len = s.len() as u32;
-                // the first mask is technically unesicary because the length should never be
-                // touching the upper two bytes
-                let str_tag_1 = (((str_len >> 8) as u8) & 0b0011_1111) | 0b0100_0000;
-                let str_tag_2 = str_len as u8;
-
-                self.data.push(str_tag_1);
-                self.data.push(str_tag_2);
-
-                self.data.extend_from_slice(&s);
-
-                let str_total_len = str_len + 2;
-                self.increment_zl_bytes(str_total_len);
-            }
-            ZipEntry::Str32BitsLength(s) => {
-                let str_len = s.len() as u32;
-
-                self.data.push(STR32_TAG);
-                self.data.extend_from_slice(&str_len.to_be_bytes());
-                self.data.extend_from_slice(&s);
-
-                let str_total_len = str_len + 5;
-                self.increment_zl_bytes(str_total_len);
-            }
-        }
-
-        // add back 0xFF
-        self.data.push(0xFF);
+        self.increment_zl_bytes(entry_total_len as u32);
     }
 
     pub fn insert(&mut self, index: usize, value: ZipEntry) {
@@ -157,7 +94,7 @@ impl ZipList {
             panic!("incorrect encoding")
         }
 
-        let entry_length = Self::get_entry_length(&value);
+        let entry_length = value.amount_bytes();
         let prevlen_length = {
             if entry_length + current_prevlen >= 254 {
                 5
@@ -169,7 +106,9 @@ impl ZipList {
         let total_len = entry_length + prevlen_length;
 
         // shift to make space in the array
-        self.shift_bytes(offset, total_len);
+        unsafe {
+            self.shift_bytes(offset, total_len);
+        }
 
         // insert the thing
         match value {
@@ -280,6 +219,74 @@ impl ZipList {
         }
 
         self.increment_zl_len(1);
+    }
+
+    unsafe fn write_entry(ptr: *mut u8, entry: ZipEntry) {
+        unsafe {
+            match entry {
+                ZipEntry::Int4BitsImmediate(i) => {
+                    let num = (i + 1) | 0b1111_0000;
+                    *ptr = num;
+                }
+                ZipEntry::Int8(i) => {
+                    *ptr = INT8_TAG;
+                    *ptr.add(1) = i as u8;
+                }
+                ZipEntry::Int16(i) => {
+                    *ptr = INT16_TAG;
+                    std::ptr::copy_nonoverlapping(i.to_le_bytes().as_ptr(), ptr.add(1), 2);
+                }
+                ZipEntry::Int24(i) => {
+                    *ptr = INT24_TAG;
+                    std::ptr::copy_nonoverlapping(Self::i24_to_le_bytes(i).as_ptr(), ptr.add(1), 3);
+                }
+                ZipEntry::Int32(i) => {
+                    *ptr = INT32_TAG;
+                    std::ptr::copy_nonoverlapping(i.to_le_bytes().as_ptr(), ptr.add(1), 4);
+                }
+                ZipEntry::Int64(i) => {
+                    *ptr = INT64_TAG;
+                    std::ptr::copy_nonoverlapping(i.to_le_bytes().as_ptr(), ptr.add(1), 8);
+                }
+                ZipEntry::Str6BitsLength(s) => {
+                    // length and tag 00 encoded here
+                    let str_tag = (s.len() as u8) & 0b00111111;
+
+                    *ptr = str_tag;
+                    std::ptr::copy_nonoverlapping(s.as_ptr(), ptr.add(1), s.len());
+                }
+                ZipEntry::Str14BitsLength(s) => {
+                    // this is ugly right now
+                    let str_len = s.len() as u32;
+                    // the first mask is technically unesicary because the length should never be
+                    // touching the upper two bytes
+                    let str_tag_1 = (((str_len >> 8) as u8) & 0b0011_1111) | 0b0100_0000;
+                    let str_tag_2 = str_len as u8;
+
+                    *ptr = str_tag_1;
+                    *ptr.add(1) = str_tag_2;
+                    std::ptr::copy_nonoverlapping(s.as_ptr(), ptr.add(2), s.len());
+                }
+                ZipEntry::Str32BitsLength(s) => {
+                    let str_len = s.len() as u32;
+
+                    *ptr = STR32_TAG;
+                    std::ptr::copy_nonoverlapping(str_len.to_be_bytes().as_ptr(), ptr.add(1), 4);
+                    std::ptr::copy_nonoverlapping(s.as_ptr(), ptr.add(5), s.len());
+                }
+            }
+        }
+    }
+
+    unsafe fn write_prevlen(ptr: *mut u8, prevlen: u32) {
+        unsafe {
+            if prevlen < 254 {
+                *ptr = prevlen as u8;
+            } else {
+                *ptr = 0xFE;
+                std::ptr::copy_nonoverlapping(prevlen.to_le_bytes().as_ptr(), ptr.add(1), 4);
+            }
+        }
     }
 
     pub fn delete(&mut self, index: usize) {
@@ -530,30 +537,23 @@ impl ZipList {
         }
     }
 
-    fn get_entry_length(entry: &ZipEntry) -> usize {
-        match entry {
-            ZipEntry::Int4BitsImmediate(_) => 1,
-            ZipEntry::Int8(_) => 2,
-            ZipEntry::Int16(_) => 3,
-            ZipEntry::Int24(_) => 4,
-            ZipEntry::Int32(_) => 5,
-            ZipEntry::Int64(_) => 9,
-            ZipEntry::Str6BitsLength(s) => s.len() + 1,
-            ZipEntry::Str14BitsLength(s) => s.len() + 2,
-            ZipEntry::Str32BitsLength(s) => s.len() + 5,
+    unsafe fn extend_bytes(&mut self, n: usize) {
+        self.data.reserve(n);
+        unsafe {
+            self.data.set_len(self.data.len() + n);
         }
     }
 
-    fn shift_bytes(&mut self, index: usize, n: usize) {
+    unsafe fn shift_bytes(&mut self, offset: usize, n: usize) {
         let original_len = self.data.len();
 
-        debug_assert!(index <= original_len, "index out of bounds");
+        debug_assert!(offset <= original_len, "index out of bounds");
 
         unsafe {
             self.data.reserve(n);
             let ptr = self.data.as_mut_ptr();
 
-            std::ptr::copy(ptr.add(index), ptr.add(index + n), original_len - index);
+            std::ptr::copy(ptr.add(offset), ptr.add(offset + n), original_len - offset);
 
             self.data.set_len(original_len + n);
         }
@@ -746,6 +746,21 @@ impl ZipEntry {
                 _ => panic!("string to long for ziplist"),
             },
             _ => unreachable!("Can't insert ziplist in ziplist"),
+        }
+    }
+
+    // gives the length of the zip entry in how many bytes header + payload
+    fn amount_bytes(&self) -> usize {
+        match self {
+            ZipEntry::Int4BitsImmediate(_) => 1,
+            ZipEntry::Int8(_) => 2,
+            ZipEntry::Int16(_) => 3,
+            ZipEntry::Int24(_) => 4,
+            ZipEntry::Int32(_) => 5,
+            ZipEntry::Int64(_) => 9,
+            ZipEntry::Str6BitsLength(s) => s.len() + 1,
+            ZipEntry::Str14BitsLength(s) => s.len() + 2,
+            ZipEntry::Str32BitsLength(s) => s.len() + 5,
         }
     }
 }
