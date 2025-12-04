@@ -79,59 +79,32 @@ impl ZipList {
             panic!("inserted in a index that does not exist")
         }
 
-        let mut offset = if index == 0 {
-            ZL_HEADERS_SIZE
-        } else {
-            self.get_index_offset(index)
-        };
+        let offset = self.get_index_offset(index);
 
-        // skip prevlen
-        let current_prevlen;
-        if self.data[offset] < 0xFE {
-            offset += 1;
-            current_prevlen = 1;
-        } else if self.data[offset] == 0xFE {
-            offset += 5;
-            current_prevlen = 2;
-        } else {
-            panic!("incorrect encoding")
-        }
+        self.insert_at_offset(offset, entry);
+    }
 
-        let entry_len = entry.amount_bytes();
-        let prevlen_len = {
-            if entry_len + current_prevlen >= 254 {
-                5
-            } else {
-                1
-            }
-        };
-        let prevlen_value = entry_len + current_prevlen;
-        let total_len = entry_len + prevlen_len;
-
-        // shift to make space in the array
+    pub fn insert_at_offset(&mut self, offset: usize, entry: ZipEntry) {
         unsafe {
-            self.shift_bytes(offset, total_len);
-        }
+            let ptr = self.data.as_ptr().add(offset);
+            let current_prevlen_size = Self::get_prevlen_size(*ptr);
 
-        // insert the thing
-        unsafe {
-            let mut write_ptr = self.data.as_mut_ptr().add(offset);
+            let entry_len = entry.amount_bytes();
+            let new_prevlen_value = entry_len + current_prevlen_size;
+            let new_prevlen_size = if new_prevlen_value < 254 { 1 } else { 5 };
+            let total_insertion_len = entry_len + new_prevlen_size;
+
+            self.shift_bytes(offset + current_prevlen_size, total_insertion_len);
+
+            let mut write_ptr = self.data.as_mut_ptr().add(offset + current_prevlen_size);
             Self::write_entry(write_ptr, entry);
             write_ptr = write_ptr.add(entry_len);
-            Self::write_prevlen(write_ptr, prevlen_value as u32);
+            Self::write_prevlen(write_ptr, new_prevlen_value as u32);
+
+            self.increment_zl_bytes(total_insertion_len as u32);
+            self.increment_zl_tail(total_insertion_len as u32);
+            self.increment_zl_len(1);
         }
-
-        // change headers
-        self.increment_zl_bytes(total_len as u32);
-
-        // the ammount the tail moves is depenedent if this is the final index that is not push
-        if index == (self.get_zl_len() - 1) as usize {
-            self.increment_zl_tail((entry_len + current_prevlen) as u32);
-        } else {
-            self.increment_zl_tail(total_len as u32);
-        }
-
-        self.increment_zl_len(1);
     }
 
     unsafe fn write_entry(ptr: *mut u8, entry: ZipEntry) {
@@ -321,7 +294,7 @@ impl ZipList {
         if self.data[offset] == 0xFE {
             offset += 5;
         } else if self.data[offset] == 0xFF {
-            panic!("no hold up");
+            panic!("invalid encoding");
         } else {
             offset += 1;
         }
@@ -448,6 +421,11 @@ impl ZipList {
         } else {
             panic!("incorrect encoding")
         }
+    }
+
+    #[inline(always)]
+    fn get_prevlen_size(size_byte: u8) -> usize {
+        if size_byte < 254 { 1 } else { 5 }
     }
 
     unsafe fn extend_bytes(&mut self, n: usize) {
