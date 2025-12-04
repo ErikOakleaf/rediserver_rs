@@ -301,83 +301,87 @@ impl ZipList {
 
         let encoding_type = EncodingType::from_header(self.data[offset]);
 
-        match encoding_type {
-            EncodingType::Int4BitsImmediate => {
-                let num = (self.data[offset] & 0b0000_1111) - 1;
-                RedisObject::Int(num as i64)
-            }
-            EncodingType::Int8 => {
-                let num = self.data[offset + 1] as i8;
-                RedisObject::Int(num as i64)
-            }
-            EncodingType::Int16 => {
-                let b1 = self.data[offset + 1];
-                let b2 = self.data[offset + 2];
-                let num = i16::from_le_bytes([b1, b2]);
-                RedisObject::Int(num as i64)
-            }
-            EncodingType::Int24 => {
-                let b1 = self.data[offset + 1];
-                let b2 = self.data[offset + 2];
-                let b3 = self.data[offset + 3];
-                let num = Self::i24_from_le_bytes([b1, b2, b3]);
-                RedisObject::Int(num as i64)
-            }
-            EncodingType::Int32 => {
-                let b1 = self.data[offset + 1];
-                let b2 = self.data[offset + 2];
-                let b3 = self.data[offset + 3];
-                let b4 = self.data[offset + 4];
-                let num = i32::from_le_bytes([b1, b2, b3, b4]);
-                RedisObject::Int(num as i64)
-            }
-            EncodingType::Int64 => {
-                let b1 = self.data[offset + 1];
-                let b2 = self.data[offset + 2];
-                let b3 = self.data[offset + 3];
-                let b4 = self.data[offset + 4];
-                let b5 = self.data[offset + 5];
-                let b6 = self.data[offset + 6];
-                let b7 = self.data[offset + 7];
-                let b8 = self.data[offset + 8];
-                let num = i64::from_le_bytes([b1, b2, b3, b4, b5, b6, b7, b8]);
-                RedisObject::Int(num as i64)
-            }
-            // TODO you could create a method here to turn things instantly to a box like is
-            // elsewhere
-            EncodingType::Str6BitsLength => {
-                let str_len = (self.data[offset] & 0b00_111111) as usize;
-                RedisObject::String(
-                    self.data[offset + 1..offset + 1 + str_len]
-                        .to_vec()
-                        .into_boxed_slice(),
-                )
-            }
-            EncodingType::Str14BitsLength => {
-                let b1 = self.data[offset] & 0b00_111111;
-                let b2 = self.data[offset + 1];
+        unsafe {
+            let ptr = self.data.as_ptr().add(offset);
 
-                let str_len = (((b1 as u16) << 8) | b2 as u16) as usize;
+            match encoding_type {
+                EncodingType::Int4BitsImmediate => {
+                    let num = (*ptr & 0b0000_1111) - 1;
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Int8 => {
+                    let num = *ptr.add(1) as i8;
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Int16 => {
+                    let ptr_i16 = ptr.add(1) as *const i16;
+                    let num = i16::from_le(std::ptr::read_unaligned(ptr_i16));
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Int24 => {
+                    let b1 = *ptr.add(1);
+                    let b2 = *ptr.add(2);
+                    let b3 = *ptr.add(3);
+                    let num = Self::i24_from_le_bytes([b1, b2, b3]);
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Int32 => {
+                    let ptr_i32 = ptr.add(1) as *const i32;
+                    let num = i32::from_le(std::ptr::read_unaligned(ptr_i32));
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Int64 => {
+                    let ptr_i64 = ptr.add(1) as *const i64;
+                    let num = i64::from_le(std::ptr::read_unaligned(ptr_i64));
+                    RedisObject::Int(num as i64)
+                }
+                EncodingType::Str6BitsLength => {
+                    let str_len = (*ptr & 0b00_111111) as usize;
+                    let str_ptr = ptr.add(1);
 
-                RedisObject::String(
-                    self.data[offset + 2..offset + 2 + str_len]
-                        .to_vec()
-                        .into_boxed_slice(),
-                )
-            }
-            EncodingType::Str32BitsLength => {
-                let b1 = self.data[offset + 1];
-                let b2 = self.data[offset + 2];
-                let b3 = self.data[offset + 3];
-                let b4 = self.data[offset + 4];
+                    let layout = std::alloc::Layout::array::<u8>(str_len).unwrap();
+                    let new_ptr = std::alloc::alloc(layout);
 
-                let str_len = u32::from_be_bytes([b1, b2, b3, b4]) as usize;
+                    std::ptr::copy_nonoverlapping(str_ptr, new_ptr, str_len);
 
-                RedisObject::String(
-                    self.data[offset + 5..offset + 5 + str_len]
-                        .to_vec()
-                        .into_boxed_slice(),
-                )
+                    let slice_ptr = std::ptr::slice_from_raw_parts_mut(new_ptr, str_len);
+                    let boxed = Box::from_raw(slice_ptr);
+
+                    RedisObject::String(boxed)
+                }
+                EncodingType::Str14BitsLength => {
+                    let b1 = *ptr & 0b00_111111;
+                    let b2 = *ptr.add(1);
+
+                    let str_len = (((b1 as u16) << 8) | b2 as u16) as usize;
+                    let str_ptr = ptr.add(2);
+
+                    let layout = std::alloc::Layout::array::<u8>(str_len).unwrap();
+                    let new_ptr = std::alloc::alloc(layout);
+
+                    std::ptr::copy_nonoverlapping(str_ptr, new_ptr, str_len);
+
+                    let slice_ptr = std::ptr::slice_from_raw_parts_mut(new_ptr, str_len);
+                    let boxed = Box::from_raw(slice_ptr);
+
+                    RedisObject::String(boxed)
+                }
+                EncodingType::Str32BitsLength => {
+                    let ptr_u32 = ptr.add(1) as *const u32;
+
+                    let str_len = u32::from_be(std::ptr::read_unaligned(ptr_u32)) as usize;
+                    let str_ptr = ptr.add(5);
+
+                    let layout = std::alloc::Layout::array::<u8>(str_len).unwrap();
+                    let new_ptr = std::alloc::alloc(layout);
+
+                    std::ptr::copy_nonoverlapping(str_ptr, new_ptr, str_len);
+
+                    let slice_ptr = std::ptr::slice_from_raw_parts_mut(new_ptr, str_len);
+                    let boxed = Box::from_raw(slice_ptr);
+
+                    RedisObject::String(boxed)
+                }
             }
         }
     }
@@ -560,19 +564,6 @@ impl ZipList {
     fn get_tail_prevlen(&self) -> u32 {
         // subtract 1 for the 0xFF
         self.get_zl_bytes() - self.get_zl_tail() - 1
-    }
-
-    #[inline(always)]
-    fn extract_6bit_length(byte: u8) -> u8 {
-        byte & 0b0011_1111
-    }
-
-    #[inline(always)]
-    fn extract_14bit_length(byte1: u8, byte2: u8) -> u16 {
-        let high_bits = (byte1 & 0b0011_1111) as u16;
-        let low_bits = byte2 as u16;
-
-        (high_bits << 8) | low_bits
     }
 
     #[inline(always)]
