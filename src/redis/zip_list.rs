@@ -40,19 +40,22 @@ impl ZipList {
 
     pub fn push(&mut self, entry: ZipEntry) {
         let prevlen = self.get_tail_prevlen();
+        let prevlen_len = { if prevlen < 254 { 1 } else { 5 } };
 
         // Set tail to point to the new value
         self.set_zl_tail((self.data.len() - 1) as u32);
         self.increment_zl_len(1);
 
-        let prevlen_len = { if prevlen < 254 { 1 } else { 5 } };
         let entry_len = entry.amount_bytes();
         let entry_total_len = prevlen_len + entry_len;
 
         unsafe {
             self.extend_bytes(entry_total_len);
 
-            let mut write_ptr = self.data.as_mut_ptr().add(self.data.len() - entry_total_len - 1);
+            let mut write_ptr = self
+                .data
+                .as_mut_ptr()
+                .add(self.data.len() - entry_total_len - 1);
             Self::write_prevlen(write_ptr, prevlen);
 
             write_ptr = write_ptr.add(prevlen_len);
@@ -67,10 +70,10 @@ impl ZipList {
         self.increment_zl_bytes(entry_total_len as u32);
     }
 
-    pub fn insert(&mut self, index: usize, value: ZipEntry) {
+    pub fn insert(&mut self, index: usize, entry: ZipEntry) {
         // if the index is at the end just use the push logic
         if index == self.get_zl_len() as usize {
-            self.push(value);
+            self.push(entry);
             return;
         } else if index > self.get_zl_len() as usize {
             panic!("inserted in a index that does not exist")
@@ -94,16 +97,16 @@ impl ZipList {
             panic!("incorrect encoding")
         }
 
-        let entry_length = value.amount_bytes();
-        let prevlen_length = {
-            if entry_length + current_prevlen >= 254 {
+        let entry_len = entry.amount_bytes();
+        let prevlen_len = {
+            if entry_len + current_prevlen >= 254 {
                 5
             } else {
                 1
             }
         };
-        let prevlen_value = entry_length + current_prevlen;
-        let total_len = entry_length + prevlen_length;
+        let prevlen_value = entry_len + current_prevlen;
+        let total_len = entry_len + prevlen_len;
 
         // shift to make space in the array
         unsafe {
@@ -111,101 +114,11 @@ impl ZipList {
         }
 
         // insert the thing
-        match value {
-            ZipEntry::Int4BitsImmediate(i) => {
-                let num = (i + 1) | 0b1111_0000;
-                self.data[offset] = num;
-
-                offset += 1;
-            }
-            ZipEntry::Int8(i) => {
-                self.data[offset] = INT8_TAG;
-                self.data[offset + 1] = i as u8;
-
-                offset += 2;
-            }
-            ZipEntry::Int16(i) => {
-                self.data[offset] = INT16_TAG;
-                offset += 1;
-
-                self.data[offset..offset + 2].copy_from_slice(&i.to_le_bytes());
-
-                offset += 2
-            }
-            ZipEntry::Int24(i) => {
-                self.data[offset] = INT24_TAG;
-                offset += 1;
-
-                self.data[offset..offset + 3].copy_from_slice(&Self::i24_to_le_bytes(i));
-
-                offset += 3
-            }
-            ZipEntry::Int32(i) => {
-                self.data[offset] = INT32_TAG;
-                offset += 1;
-
-                self.data[offset..offset + 4].copy_from_slice(&i.to_le_bytes());
-
-                offset += 4
-            }
-            ZipEntry::Int64(i) => {
-                self.data[offset] = INT64_TAG;
-                offset += 1;
-
-                self.data[offset..offset + 8].copy_from_slice(&i.to_le_bytes());
-
-                offset += 8
-            }
-            ZipEntry::Str6BitsLength(s) => {
-                // length and tag 00 encoded here
-                let str_tag = (s.len() as u8) & 0b00111111;
-                self.data[offset] = str_tag;
-                offset += 1;
-
-                self.data[offset..offset + s.len()].copy_from_slice(&s);
-
-                offset += s.len();
-            }
-            ZipEntry::Str14BitsLength(s) => {
-                // this is ugly right now
-                let str_len = s.len() as u32;
-                // the first mask is technically unesicary because the length should never be
-                // touching the upper two bytes
-                let str_tag_1 = (((str_len >> 8) as u8) & 0b0011_1111) | 0b0100_0000;
-                let str_tag_2 = str_len as u8;
-
-                self.data[offset] = str_tag_1;
-                self.data[offset + 1] = str_tag_2;
-
-                offset += 2;
-
-                self.data[offset..offset + s.len()].copy_from_slice(&s);
-
-                offset += s.len();
-            }
-            ZipEntry::Str32BitsLength(s) => {
-                let str_len = s.len() as u32;
-
-                self.data[offset] = STR32_TAG;
-                offset += 1;
-
-                self.data[offset..offset + 4].copy_from_slice(&str_len.to_be_bytes());
-                offset += 4;
-
-                self.data[offset..offset + s.len()].copy_from_slice(&s);
-
-                offset += s.len();
-            }
-        }
-
-        // add prevlen
-        // total len should not be used here but the entry len plus the previous prevlen len
-        if prevlen_value < 254 {
-            self.data[offset] = prevlen_value as u8;
-        } else {
-            self.data[offset] = 0xFE;
-            offset += 1;
-            self.data[offset..offset + 4].copy_from_slice(&(prevlen_value as u32).to_le_bytes());
+        unsafe {
+            let mut write_ptr = self.data.as_mut_ptr().add(offset);
+            Self::write_entry(write_ptr, entry);
+            write_ptr = write_ptr.add(entry_len);
+            Self::write_prevlen(write_ptr, prevlen_value as u32);
         }
 
         // change headers
@@ -213,7 +126,7 @@ impl ZipList {
 
         // the ammount the tail moves is depenedent if this is the final index that is not push
         if index == (self.get_zl_len() - 1) as usize {
-            self.increment_zl_tail((entry_length + current_prevlen) as u32);
+            self.increment_zl_tail((entry_len + current_prevlen) as u32);
         } else {
             self.increment_zl_tail(total_len as u32);
         }
