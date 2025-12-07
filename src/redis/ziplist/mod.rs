@@ -604,7 +604,7 @@ mod tests {
     fn test_zip_entry_from_bytes() {
         struct TestData {
             obj: &'static [u8],
-            expected: ZipEntry,
+            expected: ZipEntry<'static>,
         }
 
         let tests = vec![
@@ -703,41 +703,41 @@ mod tests {
             // strings
             TestData {
                 obj: b"hello",
-                expected: ZipEntry::Str6BitsLength(b"hello".to_vec().into_boxed_slice()),
+                expected: ZipEntry::Str6BitsLength(b"hello"),
             },
             TestData {
                 obj: &[b'a'; 63],
-                expected: ZipEntry::Str6BitsLength(vec![b'a'; 63].into_boxed_slice()),
+                expected: ZipEntry::Str6BitsLength(&[b'a'; 63]),
             },
             TestData {
                 obj: b"",
-                expected: ZipEntry::Str6BitsLength(b"".to_vec().into_boxed_slice()),
+                expected: ZipEntry::Str6BitsLength(b""),
             },
             TestData {
                 obj: &[b'b'; 1000],
-                expected: ZipEntry::Str14BitsLength(vec![b'b'; 1000].into_boxed_slice()),
+                expected: ZipEntry::Str14BitsLength(&[b'b'; 1000]),
             },
             TestData {
                 obj: &[b'c'; 16383],
-                expected: ZipEntry::Str14BitsLength(vec![b'c'; 16383].into_boxed_slice()),
+                expected: ZipEntry::Str14BitsLength(&[b'c'; 16383]),
             },
             TestData {
                 obj: &[b'd'; 64],
-                expected: ZipEntry::Str14BitsLength(vec![b'd'; 64].into_boxed_slice()),
+                expected: ZipEntry::Str14BitsLength(&[b'd'; 64]),
             },
             TestData {
                 obj: &[b'e'; 100000],
-                expected: ZipEntry::Str32BitsLength(vec![b'e'; 100000].into_boxed_slice()),
+                expected: ZipEntry::Str32BitsLength(&[b'e'; 100000]),
             },
             // this test would be about 4gb of memory so i skip it because it takes so long as well
             // but it has passed
             // TestData {
-            //     obj: RedisObject::String(vec![b'f'; 4294967295].into_boxed_slice()),
-            //     expected: ZipEntry::Str32BitsLength(vec![b'f'; 4294967295].into_boxed_slice()),
+            // obj: RedisObject::String(&[b'f'; 4294967295]),
+            // expected: ZipEntry::Str32BitsLength(vec![b'f'; 4294967295].into_boxed_slice()),
             // },
             TestData {
                 obj: &[b'g'; 16384],
-                expected: ZipEntry::Str32BitsLength(vec![b'g'; 16384].into_boxed_slice()),
+                expected: ZipEntry::Str32BitsLength(&[b'g'; 16384]),
             },
         ];
 
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn test_zip_list_push() {
         struct TestData {
-            entries: Vec<ZipEntry>,
+            entries: Vec<ZipEntry<'static>>,
             expected: Vec<u8>,
         }
 
@@ -874,8 +874,8 @@ mod tests {
             // string tests
             TestData {
                 entries: vec![
-                    ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
-                    ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+                    ZipEntry::Str6BitsLength(b"Hello World"),
+                    ZipEntry::Str14BitsLength(&[b'a'; 70]),
                 ],
                 #[rustfmt::skip]
                 expected:{
@@ -895,10 +895,10 @@ mod tests {
             // long string test
             TestData {
                 entries: vec![
-                    ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
-                    ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
-                    ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
-                    ZipEntry::Str32BitsLength(Box::new([b'c'; 70_000])),
+                    ZipEntry::Str6BitsLength(b"Hello World"),
+                    ZipEntry::Str14BitsLength(&[b'a'; 70]),
+                    ZipEntry::Str32BitsLength(&[b'b'; 70_000]),
+                    ZipEntry::Str32BitsLength(&[b'c'; 70_000]),
                 ],
                 #[rustfmt::skip]
                 expected:{
@@ -940,7 +940,7 @@ mod tests {
     #[test]
     fn test_zip_list_insert() {
         struct InsertEntry {
-            entry: ZipEntry,
+            entry: ZipEntry<'static>,
             index: usize,
         }
 
@@ -1075,16 +1075,16 @@ mod tests {
             TestData {
                 entries: vec![
                     InsertEntry {
-                        entry: ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
+                        entry: ZipEntry::Str32BitsLength(&[b'b'; 70_000]),
                         index: 0,
                     },
                     InsertEntry {
-                        entry: ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+                        entry: ZipEntry::Str14BitsLength(&[b'a'; 70]),
 
                         index: 0,
                     },
                     InsertEntry {
-                        entry: ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                        entry: ZipEntry::Str6BitsLength(b"Hello World"),
                         index: 0,
                     },
                 ],
@@ -1111,19 +1111,19 @@ mod tests {
             TestData {
                 entries: vec![
                     InsertEntry {
-                        entry: ZipEntry::Str6BitsLength(b"Hello World".to_vec().into_boxed_slice()),
+                        entry: ZipEntry::Str6BitsLength(b"Hello World"),
                         index: 0,
                     },
                     InsertEntry {
-                        entry: ZipEntry::Str14BitsLength(Box::new([b'a'; 70])),
+                        entry: ZipEntry::Str14BitsLength(&[b'a'; 70]),
                         index: 1,
                     },
                     InsertEntry {
-                        entry: ZipEntry::Str32BitsLength(Box::new([b'b'; 70_000])),
+                        entry: ZipEntry::Str32BitsLength(&[b'b'; 70_000]),
                         index: 2,
                     },
                     InsertEntry {
-                        entry: ZipEntry::Str32BitsLength(Box::new([b'c'; 70_000])),
+                        entry: ZipEntry::Str32BitsLength(&[b'c'; 70_000]),
                         index: 3,
                     },
                 ],

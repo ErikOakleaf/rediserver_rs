@@ -22,9 +22,9 @@ fn bench_push(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5_000_000_000));
 
                 // Clone because Box<[u8]> is owned.
-                zl.push(ZipEntry::Str6BitsLength(s6.clone()));
-                zl.push(ZipEntry::Str14BitsLength(s14.clone()));
-                zl.push(ZipEntry::Str32BitsLength(s32.clone()));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
             },
             criterion::BatchSize::SmallInput,
         );
@@ -58,11 +58,11 @@ fn bench_insert(c: &mut Criterion) {
                 zl.insert(1, ZipEntry::Int32(2147483647));
                 zl.insert(1, ZipEntry::Int64(5000000000));
 
-                zl.insert(1, ZipEntry::Str6BitsLength(s6.clone()));
+                zl.insert(1, ZipEntry::Str6BitsLength(&s6));
 
-                zl.insert(1, ZipEntry::Str14BitsLength(s14.clone()));
+                zl.insert(1, ZipEntry::Str14BitsLength(&s14));
 
-                zl.insert(1, ZipEntry::Str32BitsLength(s32.clone()));
+                zl.insert(1, ZipEntry::Str32BitsLength(&s32));
             },
             criterion::BatchSize::PerIteration,
         );
@@ -86,13 +86,13 @@ fn bench_delete(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5000000000));
 
                 let s6 = b"hello".to_vec().into_boxed_slice();
-                zl.push(ZipEntry::Str6BitsLength(s6));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
 
                 let s14 = vec![b'a'; 100].into_boxed_slice();
-                zl.push(ZipEntry::Str14BitsLength(s14));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
 
                 let s32 = vec![b'b'; 20000].into_boxed_slice();
-                zl.push(ZipEntry::Str32BitsLength(s32));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
 
                 zl
             },
@@ -119,13 +119,13 @@ fn bench_delete(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5000000000));
 
                 let s6 = b"hello".to_vec().into_boxed_slice();
-                zl.push(ZipEntry::Str6BitsLength(s6));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
 
                 let s14 = vec![b'a'; 100].into_boxed_slice();
-                zl.push(ZipEntry::Str14BitsLength(s14));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
 
                 let s32 = vec![b'b'; 20000].into_boxed_slice();
-                zl.push(ZipEntry::Str32BitsLength(s32));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
 
                 zl
             },
@@ -158,13 +158,13 @@ fn bench_get(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5000000000));
 
                 let s6 = b"hello".to_vec().into_boxed_slice();
-                zl.push(ZipEntry::Str6BitsLength(s6));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
 
                 let s14 = vec![b'a'; 100].into_boxed_slice();
-                zl.push(ZipEntry::Str14BitsLength(s14));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
 
                 let s32 = vec![b'b'; 20000].into_boxed_slice();
-                zl.push(ZipEntry::Str32BitsLength(s32));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
 
                 zl
             },
@@ -197,13 +197,13 @@ pub fn bench_pop(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5000000000));
 
                 let s6 = b"hello".to_vec().into_boxed_slice();
-                zl.push(ZipEntry::Str6BitsLength(s6));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
 
                 let s14 = vec![b'a'; 100].into_boxed_slice();
-                zl.push(ZipEntry::Str14BitsLength(s14));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
 
                 let s32 = vec![b'b'; 20000].into_boxed_slice();
-                zl.push(ZipEntry::Str32BitsLength(s32));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
 
                 zl
             },
@@ -230,13 +230,13 @@ pub fn bench_pop(c: &mut Criterion) {
                 zl.push(ZipEntry::Int64(5000000000));
 
                 let s6 = b"hello".to_vec().into_boxed_slice();
-                zl.push(ZipEntry::Str6BitsLength(s6));
+                zl.push(ZipEntry::Str6BitsLength(&s6));
 
                 let s14 = vec![b'a'; 100].into_boxed_slice();
-                zl.push(ZipEntry::Str14BitsLength(s14));
+                zl.push(ZipEntry::Str14BitsLength(&s14));
 
                 let s32 = vec![b'b'; 20000].into_boxed_slice();
-                zl.push(ZipEntry::Str32BitsLength(s32));
+                zl.push(ZipEntry::Str32BitsLength(&s32));
 
                 zl
             },

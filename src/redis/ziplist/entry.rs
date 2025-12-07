@@ -1,7 +1,7 @@
-use crate::redis::redis_object::{RedisObject, try_parse_int};
+use crate::redis::redis_object::try_parse_int;
 
 #[derive(Debug, PartialEq)]
-pub enum ZipEntry {
+pub enum ZipEntry<'a> {
     Int4BitsImmediate(u8),
     Int8(i8),
     Int16(i16),
@@ -10,14 +10,14 @@ pub enum ZipEntry {
     Int64(i64),
 
     // String encodings
-    Str6BitsLength(Box<[u8]>),  // 6-bit immediate
-    Str14BitsLength(Box<[u8]>), // 14-bit big-endian
-    Str32BitsLength(Box<[u8]>), // 32-bit big-endian
+    Str6BitsLength(&'a [u8]),  // 6-bit immediate
+    Str14BitsLength(&'a [u8]), // 14-bit big-endian
+    Str32BitsLength(&'a [u8]), // 32-bit big-endian
 }
 
-impl ZipEntry {
+impl<'a> ZipEntry<'a> {
     // this should probably be it's own thing and not from redis object
-    pub fn from_bytes(bytes: &[u8]) -> ZipEntry {
+    pub fn from_bytes(bytes: &'a [u8]) -> ZipEntry<'a> {
         const INT8_MIN: i64 = i8::MIN as i64;
         const INT8_MAX: i64 = i8::MAX as i64;
         const INT16_MIN: i64 = i16::MIN as i64;
@@ -45,9 +45,9 @@ impl ZipEntry {
             },
             // TODO this might be able to be a reference instead with no extra overhead
             None => match bytes.len() {
-                0..=63 => ZipEntry::Str6BitsLength(bytes.to_vec().into_boxed_slice()),
-                64..=16383 => ZipEntry::Str14BitsLength(bytes.to_vec().into_boxed_slice()),
-                16384..=U32_MAX => ZipEntry::Str32BitsLength(bytes.to_vec().into_boxed_slice()),
+                0..=63 => ZipEntry::Str6BitsLength(bytes),
+                64..=16383 => ZipEntry::Str14BitsLength(bytes),
+                16384..=U32_MAX => ZipEntry::Str32BitsLength(bytes),
                 _ => panic!("string to long for ziplist"),
             },
         }
