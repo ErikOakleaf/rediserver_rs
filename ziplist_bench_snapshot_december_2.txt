@@ -8,3 +8,6 @@ ziplist_delete/delete_tail          time:   [119.61 ns 120.49 ns 121.90 ns]
 
 ziplist_get/all_types               time:   [777.21 ns 781.14 ns 785.08 ns]
 
+ziplist_pop/pop_head                time:   [2.4477 µs 2.5186 µs 2.5965 µs]
+
+ziplist_pop/pop_tail                time:   [715.56 ns 720.69 ns 726.95 ns]

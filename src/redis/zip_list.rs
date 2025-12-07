@@ -87,7 +87,7 @@ impl ZipList {
     pub fn insert_at_offset(&mut self, offset: usize, entry: ZipEntry) {
         unsafe {
             let ptr = self.data.as_ptr().add(offset);
-            let current_prevlen_size = Self::get_prevlen_size(*ptr);
+            let current_prevlen_size = get_prevlen_size(*ptr);
 
             let entry_len = entry.amount_bytes();
             let new_prevlen_value = entry_len + current_prevlen_size;
@@ -175,21 +175,21 @@ impl ZipList {
         }
     }
 
-    pub fn delete(&mut self, index: usize) {
+    pub fn remove(&mut self, index: usize) {
+        // special case remove
         if index == (self.get_zl_len() - 1) as usize {
-            self.delete_tail();
+            self.remove_tail();
             return;
         }
 
         let mut offset = self.get_index_offset(index);
 
-        // figure out if the value before the tail has a long or short prevlen this will come in
-        // handy later
-        let before_tail_prevlen = self.data[self.get_index_offset(index) - 1];
-        let long_tail_prevlen = before_tail_prevlen == 0xFE;
+        // special case penultimate remove
 
-        // skip the prevlen we don't want to touch this unless it is the tail i supose then it
-        // would basically be a pop
+        if index == (self.get_zl_len() - 2) as usize {
+            self.remove_penultimate(offset);
+            return;
+        }
 
         if self.data[offset] == 0xFE {
             offset += 5;
@@ -199,6 +199,10 @@ impl ZipList {
             offset += 1;
         }
 
+        self.remove_at_offset(offset);
+    }
+
+    pub fn remove_at_offset(&mut self, mut offset: usize) {
         let init_pos = offset;
 
         let data_header = EncodingType::from_header(self.data[offset]);
@@ -234,51 +238,51 @@ impl ZipList {
                     u32::from_be_bytes([str_len_1, str_len_2, str_len_3, str_len_4]) as usize;
                 offset += 4;
                 offset += str_len;
-                println!("strlen is {}", str_len);
             }
         }
 
         // delete the prevlen
 
-        let long_after_prevlen;
         if self.data[offset] == 0xFE {
             offset += 5;
-            long_after_prevlen = true;
         } else if self.data[offset] == 0xFF {
             panic!("no hold up");
         } else {
             offset += 1;
-            long_after_prevlen = false;
         }
 
         self.data.drain(init_pos..offset);
 
         let bytes_deleted = offset - init_pos;
         self.decrement_zl_bytes(bytes_deleted as u32);
-        // depending on if the prevlen of the value behind it is larger or less than the current
-        // one we would have to shift the tail to point to the correct thing
-
-        let new_tail = {
-            if long_tail_prevlen && !long_after_prevlen {
-                println!("shorten prevlen");
-                self.get_zl_tail() - bytes_deleted as u32 - 4
-            } else if !long_tail_prevlen && long_after_prevlen {
-                println!("elongate prevlen");
-                self.get_zl_tail() - bytes_deleted as u32 + 4
-            } else {
-                self.get_zl_tail() - bytes_deleted as u32
-            }
-        };
-
-        self.set_zl_tail(new_tail);
+        self.decrement_zl_tail(bytes_deleted as u32);
         self.decrement_zl_len(1);
-
-        // if there is a value after the deletion we have to modify it's prevlen
     }
 
-    pub fn delete_tail(&mut self) {
+    pub fn remove_penultimate(&mut self, mut offset: usize) {
+        let long_penultimate_prevlen = self.data[offset] == 0xFE;
+        let long_tail_prevlen = self.data[self.get_zl_tail() as usize] == 0xFE;
+
+        //skip prevlen
+        if long_penultimate_prevlen == true {
+            offset += 5;
+        } else {
+            offset += 1;
+        }
+
+        self.remove_at_offset(offset);
+
+        // nudge tail
+        if !long_tail_prevlen && long_penultimate_prevlen {
+            self.decrement_zl_tail(4);
+        } else if long_tail_prevlen && !long_penultimate_prevlen {
+            self.increment_zl_tail(4);
+        }
+    }
+
+    pub fn remove_tail(&mut self) {
         let current_tail = self.get_zl_tail();
-        let new_tail = current_tail - Self::get_prevlen(&self.data[current_tail as usize..]) as u32;
+        let new_tail = current_tail - get_prevlen(&self.data[current_tail as usize..]) as u32;
         let bytes_deleted = self.get_zl_bytes() - self.get_zl_tail() - 1;
 
         self.data.drain(current_tail as usize..self.data.len() - 1);
@@ -287,7 +291,7 @@ impl ZipList {
         self.decrement_zl_len(1);
     }
 
-    pub fn get(&mut self, index: usize) -> RedisObject {
+    pub fn get(&self, index: usize) -> RedisObject {
         let mut offset = self.get_index_offset(index);
 
         // skip prevlen
@@ -299,6 +303,10 @@ impl ZipList {
             offset += 1;
         }
 
+        self.get_at_offset(offset)
+    }
+
+    pub fn get_at_offset(&self, offset: usize) -> RedisObject {
         let encoding_type = EncodingType::from_header(self.data[offset]);
 
         unsafe {
@@ -388,14 +396,14 @@ impl ZipList {
 
     pub fn pop_tail(&mut self) -> RedisObject {
         let object = self.get((self.get_zl_len() - 1) as usize);
-        self.delete_tail();
+        self.remove_tail();
 
         object
     }
 
     pub fn pop_head(&mut self) -> RedisObject {
         let object = self.get(0);
-        self.delete(0);
+        self.remove(0);
 
         object
     }
@@ -410,26 +418,10 @@ impl ZipList {
         let mut current_index = self.get_zl_tail() as usize;
 
         for _ in 0..indices_to_step_back {
-            current_index -= Self::get_prevlen(&self.data[current_index..]);
+            current_index -= get_prevlen(&self.data[current_index..]);
         }
 
         return current_index;
-    }
-
-    fn get_prevlen(prevlen: &[u8]) -> usize {
-        if prevlen[0] < 0xFE {
-            return prevlen[0] as usize;
-        } else if prevlen[0] == 0xFE {
-            let bytes = [prevlen[1], prevlen[2], prevlen[3], prevlen[4]];
-            return u32::from_le_bytes(bytes) as usize;
-        } else {
-            panic!("incorrect encoding")
-        }
-    }
-
-    #[inline(always)]
-    fn get_prevlen_size(size_byte: u8) -> usize {
-        if size_byte < 254 { 1 } else { 5 }
     }
 
     unsafe fn extend_bytes(&mut self, n: usize) {
@@ -578,6 +570,65 @@ impl ZipList {
     }
 }
 
+pub struct ZipListIter<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Iterator for ZipListIter<'a> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.data.len() - 1 || self.data[self.offset] == ZL_END {
+            return None;
+        }
+
+        let current_offset = self.offset;
+
+        // skip prevlen
+        self.offset += get_prevlen_size(self.data[self.offset]);
+
+        let encoding_type = EncodingType::from_header(self.data[self.offset]);
+
+        match encoding_type {
+            EncodingType::Int4BitsImmediate => self.offset += 1,
+            EncodingType::Int8 => self.offset += 2,
+            EncodingType::Int16 => self.offset += 3,
+            EncodingType::Int24 => self.offset += 4,
+            EncodingType::Int32 => self.offset += 5,
+            EncodingType::Int64 => self.offset += 9,
+            EncodingType::Str6BitsLength => {
+                let str_len = (self.data[self.offset] & 0b00_111111) as usize;
+                self.offset += 1;
+                self.offset += str_len;
+            }
+            EncodingType::Str14BitsLength => {
+                let b1 = self.data[self.offset] & 0b00_111111;
+                let b2 = self.data[self.offset + 1];
+                let str_len = u16::from_be_bytes([b1, b2]) as usize;
+                self.offset += 2;
+                self.offset += str_len;
+            }
+            EncodingType::Str32BitsLength => {
+                let b1 = self.data[self.offset + 1];
+                let b2 = self.data[self.offset + 2];
+                let b3 = self.data[self.offset + 3];
+                let b4 = self.data[self.offset + 4];
+                let str_len = u32::from_be_bytes([b1, b2, b3, b4]) as usize;
+                self.offset += 5;
+                self.offset += str_len;
+            }
+        };
+
+        Some(current_offset)
+    }
+}
+
+pub struct ZipListIterRev<'a> {
+    zip_list: &'a ZipList,
+    offset: usize,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ZipEntry {
     Int4BitsImmediate(u8),
@@ -679,6 +730,24 @@ impl EncodingType {
             _ => panic!("invalid header"),
         }
     }
+}
+
+// Global helpers
+
+fn get_prevlen(prevlen: &[u8]) -> usize {
+    if prevlen[0] < 0xFE {
+        return prevlen[0] as usize;
+    } else if prevlen[0] == 0xFE {
+        let bytes = [prevlen[1], prevlen[2], prevlen[3], prevlen[4]];
+        return u32::from_le_bytes(bytes) as usize;
+    } else {
+        panic!("incorrect encoding")
+    }
+}
+
+#[inline(always)]
+fn get_prevlen_size(size_byte: u8) -> usize {
+    if size_byte < 254 { 1 } else { 5 }
 }
 
 #[cfg(test)]
@@ -1083,12 +1152,6 @@ mod tests {
             }
 
             assert_eq!(&test.expected, &zl.data);
-
-            println!(
-                "expected headers: {:?}\ngot headers: {:?}",
-                &test.expected[..10],
-                &zl.data[..10]
-            );
         }
     }
 
@@ -1320,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zip_list_delete() {
+    fn test_zip_list_remove() {
         struct TestData {
             init_state: Vec<u8>,
             deletions: Vec<usize>,
@@ -1508,7 +1571,7 @@ mod tests {
             let mut zl = ZipList::new();
             zl.data = test.init_state;
             for index in test.deletions {
-                zl.delete(index);
+                zl.remove(index);
             }
 
             assert_eq!(&test.expected, &zl.data);
