@@ -601,132 +601,132 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_zip_entry_from_redis_object() {
+    fn test_zip_entry_from_bytes() {
         struct TestData {
-            obj: RedisObject,
+            obj: &'static [u8],
             expected: ZipEntry,
         }
 
         let tests = vec![
             TestData {
-                obj: RedisObject::new_from_bytes(b"5"),
+                obj: b"5",
                 expected: ZipEntry::Int4BitsImmediate(0b1111_0110),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"12"),
+                obj: b"12",
                 expected: ZipEntry::Int4BitsImmediate(0b1111_1101),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"0"),
+                obj: b"0",
                 expected: ZipEntry::Int4BitsImmediate(0b1111_0001),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"100"),
+                obj: b"100",
                 expected: ZipEntry::Int8(100),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-100"),
+                obj: b"-100",
                 expected: ZipEntry::Int8(-100),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"127"),
+                obj: b"127",
                 expected: ZipEntry::Int8(127),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-128"),
+                obj: b"-128",
                 expected: ZipEntry::Int8(-128),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"1000"),
+                obj: b"1000",
                 expected: ZipEntry::Int16(1000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-1000"),
+                obj: b"-1000",
                 expected: ZipEntry::Int16(-1000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"32767"),
+                obj: b"32767",
                 expected: ZipEntry::Int16(32767),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-32768"),
+                obj: b"-32768",
                 expected: ZipEntry::Int16(-32768),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"100000"),
+                obj: b"100000",
                 expected: ZipEntry::Int24(100000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-100000"),
+                obj: b"-100000",
                 expected: ZipEntry::Int24(-100000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"8388607"),
+                obj: b"8388607",
                 expected: ZipEntry::Int24(8388607),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-8388608"),
+                obj: b"-8388608",
                 expected: ZipEntry::Int24(-8388608),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"10000000"),
+                obj: b"10000000",
                 expected: ZipEntry::Int32(10000000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-10000000"),
+                obj: b"-10000000",
                 expected: ZipEntry::Int32(-10000000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"2147483647"),
+                obj: b"2147483647",
                 expected: ZipEntry::Int32(2147483647),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-2147483648"),
+                obj: b"-2147483648",
                 expected: ZipEntry::Int32(-2147483648),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"5000000000"),
+                obj: b"5000000000",
                 expected: ZipEntry::Int64(5000000000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-5000000000"),
+                obj: b"-5000000000",
                 expected: ZipEntry::Int64(-5000000000),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"9223372036854775807"),
+                obj: b"9223372036854775807",
                 expected: ZipEntry::Int64(9223372036854775807),
             },
             TestData {
-                obj: RedisObject::new_from_bytes(b"-9223372036854775808"),
+                obj: b"-9223372036854775808",
                 expected: ZipEntry::Int64(-9223372036854775808),
             },
             // strings
             TestData {
-                obj: RedisObject::String(b"hello".to_vec().into_boxed_slice()),
+                obj: b"hello",
                 expected: ZipEntry::Str6BitsLength(b"hello".to_vec().into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(vec![b'a'; 63].into_boxed_slice()),
+                obj: &[b'a'; 63],
                 expected: ZipEntry::Str6BitsLength(vec![b'a'; 63].into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(b"".to_vec().into_boxed_slice()),
+                obj: b"",
                 expected: ZipEntry::Str6BitsLength(b"".to_vec().into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(vec![b'b'; 1000].into_boxed_slice()),
+                obj: &[b'b'; 1000],
                 expected: ZipEntry::Str14BitsLength(vec![b'b'; 1000].into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(vec![b'c'; 16383].into_boxed_slice()),
+                obj: &[b'c'; 16383],
                 expected: ZipEntry::Str14BitsLength(vec![b'c'; 16383].into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(vec![b'd'; 64].into_boxed_slice()),
+                obj: &[b'd'; 64],
                 expected: ZipEntry::Str14BitsLength(vec![b'd'; 64].into_boxed_slice()),
             },
             TestData {
-                obj: RedisObject::String(vec![b'e'; 100000].into_boxed_slice()),
+                obj: &[b'e'; 100000],
                 expected: ZipEntry::Str32BitsLength(vec![b'e'; 100000].into_boxed_slice()),
             },
             // this test would be about 4gb of memory so i skip it because it takes so long as well
@@ -736,13 +736,13 @@ mod tests {
             //     expected: ZipEntry::Str32BitsLength(vec![b'f'; 4294967295].into_boxed_slice()),
             // },
             TestData {
-                obj: RedisObject::String(vec![b'g'; 16384].into_boxed_slice()),
+                obj: &[b'g'; 16384],
                 expected: ZipEntry::Str32BitsLength(vec![b'g'; 16384].into_boxed_slice()),
             },
         ];
 
         for test in tests {
-            let result = ZipEntry::from_redis_object(test.obj);
+            let result = ZipEntry::from_bytes(test.obj);
             assert_eq!(test.expected, result);
         }
     }

@@ -63,8 +63,8 @@ impl Redis {
             // solved with macros or a function that takes a bool or something although this could
             // create extra unecisary branching
             RedisCommand::LPush { key, value } => {
-                let value_object = RedisObject::new_from_bytes(value);
-                let zip_entry = ZipEntry::from_redis_object(value_object.clone());
+                // let value_object = RedisObject::new_from_bytes(value);
+                let zip_entry = ZipEntry::from_bytes(value);
                 let possible_node = self.dict.lookup_mut(key);
                 match possible_node {
                     // insert into list
@@ -78,7 +78,7 @@ impl Redis {
                     // create the list
                     None => {
                         let mut new_zip_list = ZipList::new();
-                        let zip_entry = ZipEntry::from_redis_object(value_object);
+                        let zip_entry = ZipEntry::from_bytes(value);
                         new_zip_list.push(zip_entry);
                         let value_object = RedisObject::List(new_zip_list);
 
@@ -92,7 +92,7 @@ impl Redis {
             }
             RedisCommand::RPush { key, value } => {
                 let value_object = RedisObject::new_from_bytes(value);
-                let zip_entry = ZipEntry::from_redis_object(value_object.clone());
+                let zip_entry = ZipEntry::from_bytes(value);
                 let possible_node = self.dict.lookup_mut(key);
                 match possible_node {
                     // insert into list
@@ -106,7 +106,7 @@ impl Redis {
                     // create the list
                     None => {
                         let mut new_zip_list = ZipList::new();
-                        let zip_entry = ZipEntry::from_redis_object(value_object);
+                        let zip_entry = ZipEntry::from_bytes(value);
                         new_zip_list.push(zip_entry);
                         let value_object = RedisObject::List(new_zip_list);
 

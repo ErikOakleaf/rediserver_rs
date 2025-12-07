@@ -38,51 +38,47 @@ impl RedisObject {
     // Helpers
 
     fn get_redis_object(bytes: &[u8]) -> RedisObject {
-        if bytes.is_empty() {
-            return RedisObject::String(Box::new([]));
+        match try_parse_int(bytes) {
+            Some(num) => RedisObject::Int(num),
+            None => RedisObject::String(box_bytes_from_slice(bytes)),
         }
-
-        let mut num: i64 = 0;
-        let mut i = 0;
-
-        let is_negative = match bytes[0] {
-            b'-' => {
-                i += 1;
-                true
-            }
-            _ => false,
-        };
-
-        // check if the number starts with zero and has more digits after which would make it a
-        // string and not int
-        if bytes[i] == b'0' && bytes.len() > i + 1 {
-            return RedisObject::String(box_bytes_from_slice(bytes));
-        }
-
-        while i < bytes.len() {
-            if !bytes[i].is_ascii_digit() {
-                return RedisObject::String(box_bytes_from_slice(bytes));
-            }
-
-            let digit = (bytes[i] - b'0') as i64;
-
-            if is_negative {
-                match num.checked_mul(10).and_then(|n| n.checked_sub(digit)) {
-                    Some(n) => num = n,
-                    None => return RedisObject::String(box_bytes_from_slice(bytes)),
-                }
-            } else {
-                match num.checked_mul(10).and_then(|n| n.checked_add(digit)) {
-                    Some(n) => num = n,
-                    None => return RedisObject::String(box_bytes_from_slice(bytes)),
-                }
-            }
-
-            i += 1;
-        }
-
-        RedisObject::Int(num)
     }
+}
+
+pub fn try_parse_int(bytes: &[u8]) -> Option<i64> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let mut num: i64 = 0;
+    let mut i = 0;
+    let is_negative = match bytes[0] {
+        b'-' => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    if bytes[i] == b'0' && bytes.len() > i + 1 {
+        return None;
+    }
+
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            return None;
+        }
+        let digit = (bytes[i] - b'0') as i64;
+
+        if is_negative {
+            num = num.checked_mul(10)?.checked_sub(digit)?;
+        } else {
+            num = num.checked_mul(10)?.checked_add(digit)?;
+        }
+        i += 1;
+    }
+
+    Some(num)
 }
 
 fn box_bytes_from_slice(src: &[u8]) -> Box<[u8]> {

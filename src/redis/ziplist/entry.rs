@@ -1,4 +1,4 @@
-use crate::redis::redis_object::RedisObject;
+use crate::redis::redis_object::{RedisObject, try_parse_int};
 
 #[derive(Debug, PartialEq)]
 pub enum ZipEntry {
@@ -17,7 +17,7 @@ pub enum ZipEntry {
 
 impl ZipEntry {
     // this should probably be it's own thing and not from redis object
-    pub fn from_redis_object(obj: RedisObject) -> ZipEntry {
+    pub fn from_bytes(bytes: &[u8]) -> ZipEntry {
         const INT8_MIN: i64 = i8::MIN as i64;
         const INT8_MAX: i64 = i8::MAX as i64;
         const INT16_MIN: i64 = i16::MIN as i64;
@@ -29,8 +29,8 @@ impl ZipEntry {
 
         const U32_MAX: usize = u32::MAX as usize;
 
-        match obj {
-            RedisObject::Int(i) => match i {
+        match try_parse_int(bytes) {
+            Some(i) => match i {
                 0..=12 => {
                     let num = i as u8 + 1;
                     let tag = 0b1111_0000;
@@ -43,13 +43,13 @@ impl ZipEntry {
                 INT32_MIN..=INT32_MAX => ZipEntry::Int32(i as i32),
                 _ => ZipEntry::Int64(i),
             },
-            RedisObject::String(s) => match s.len() {
-                0..=63 => ZipEntry::Str6BitsLength(s),
-                64..=16383 => ZipEntry::Str14BitsLength(s),
-                16384..=U32_MAX => ZipEntry::Str32BitsLength(s),
+            // TODO this might be able to be a reference instead with no extra overhead
+            None => match bytes.len() {
+                0..=63 => ZipEntry::Str6BitsLength(bytes.to_vec().into_boxed_slice()),
+                64..=16383 => ZipEntry::Str14BitsLength(bytes.to_vec().into_boxed_slice()),
+                16384..=U32_MAX => ZipEntry::Str32BitsLength(bytes.to_vec().into_boxed_slice()),
                 _ => panic!("string to long for ziplist"),
             },
-            _ => unreachable!("Can't insert ziplist in ziplist"),
         }
     }
 
