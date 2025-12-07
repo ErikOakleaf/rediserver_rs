@@ -1,4 +1,11 @@
+mod encoding;
+mod entry;
+mod iterator;
+
 use std::mem::{self};
+
+pub use encoding::EncodingType;
+pub use entry::ZipEntry;
 
 use crate::redis::redis_object::RedisObject;
 
@@ -175,14 +182,14 @@ impl ZipList {
         }
     }
 
-    pub fn remove(&mut self, index: usize) {
+    pub fn remove_at_index(&mut self, index: usize) {
         // special case remove
         if index == (self.get_zl_len() - 1) as usize {
             self.remove_tail();
             return;
         }
 
-        let mut offset = self.get_index_offset(index);
+        let offset = self.get_index_offset(index);
 
         // special case penultimate remove
 
@@ -191,6 +198,11 @@ impl ZipList {
             return;
         }
 
+        self.remove_at_offset(offset);
+    }
+
+    pub fn remove_at_offset(&mut self, mut offset: usize) {
+        // skip prevlen
         if self.data[offset] == 0xFE {
             offset += 5;
         } else if self.data[offset] == 0xFF {
@@ -199,10 +211,6 @@ impl ZipList {
             offset += 1;
         }
 
-        self.remove_at_offset(offset);
-    }
-
-    pub fn remove_at_offset(&mut self, mut offset: usize) {
         let init_pos = offset;
 
         let data_header = EncodingType::from_header(self.data[offset]);
@@ -259,16 +267,9 @@ impl ZipList {
         self.decrement_zl_len(1);
     }
 
-    pub fn remove_penultimate(&mut self, mut offset: usize) {
+    pub fn remove_penultimate(&mut self, offset: usize) {
         let long_penultimate_prevlen = self.data[offset] == 0xFE;
         let long_tail_prevlen = self.data[self.get_zl_tail() as usize] == 0xFE;
-
-        //skip prevlen
-        if long_penultimate_prevlen == true {
-            offset += 5;
-        } else {
-            offset += 1;
-        }
 
         self.remove_at_offset(offset);
 
@@ -292,8 +293,11 @@ impl ZipList {
     }
 
     pub fn get(&self, index: usize) -> RedisObject {
-        let mut offset = self.get_index_offset(index);
+        let offset = self.get_index_offset(index);
+        self.get_at_offset(offset)
+    }
 
+    pub fn get_at_offset(&self, mut offset: usize) -> RedisObject {
         // skip prevlen
         if self.data[offset] == 0xFE {
             offset += 5;
@@ -303,10 +307,6 @@ impl ZipList {
             offset += 1;
         }
 
-        self.get_at_offset(offset)
-    }
-
-    pub fn get_at_offset(&self, offset: usize) -> RedisObject {
         let encoding_type = EncodingType::from_header(self.data[offset]);
 
         unsafe {
@@ -395,15 +395,23 @@ impl ZipList {
     }
 
     pub fn pop_tail(&mut self) -> RedisObject {
-        let object = self.get((self.get_zl_len() - 1) as usize);
+        let object = self.get_at_offset(self.get_zl_tail() as usize);
         self.remove_tail();
 
         object
     }
 
     pub fn pop_head(&mut self) -> RedisObject {
-        let object = self.get(0);
-        self.remove(0);
+        let object = self.get_at_offset(ZL_HEADERS_SIZE);
+
+        let len = self.get_zl_len();
+        if len == 2 {
+            self.remove_penultimate(ZL_HEADERS_SIZE);
+        } else if len == 1 {
+            self.remove_tail();
+        } else {
+            self.remove_at_offset(ZL_HEADERS_SIZE);
+        }
 
         object
     }
@@ -567,168 +575,6 @@ impl ZipList {
     fn i24_from_le_bytes(num: [u8; 3]) -> i32 {
         let value = (num[0] as i32) | ((num[1] as i32) << 8) | ((num[2] as i32) << 16);
         (value << 8) >> 8
-    }
-}
-
-pub struct ZipListIter<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Iterator for ZipListIter<'a> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.len() - 1 || self.data[self.offset] == ZL_END {
-            return None;
-        }
-
-        let current_offset = self.offset;
-
-        // skip prevlen
-        self.offset += get_prevlen_size(self.data[self.offset]);
-
-        let encoding_type = EncodingType::from_header(self.data[self.offset]);
-
-        match encoding_type {
-            EncodingType::Int4BitsImmediate => self.offset += 1,
-            EncodingType::Int8 => self.offset += 2,
-            EncodingType::Int16 => self.offset += 3,
-            EncodingType::Int24 => self.offset += 4,
-            EncodingType::Int32 => self.offset += 5,
-            EncodingType::Int64 => self.offset += 9,
-            EncodingType::Str6BitsLength => {
-                let str_len = (self.data[self.offset] & 0b00_111111) as usize;
-                self.offset += 1;
-                self.offset += str_len;
-            }
-            EncodingType::Str14BitsLength => {
-                let b1 = self.data[self.offset] & 0b00_111111;
-                let b2 = self.data[self.offset + 1];
-                let str_len = u16::from_be_bytes([b1, b2]) as usize;
-                self.offset += 2;
-                self.offset += str_len;
-            }
-            EncodingType::Str32BitsLength => {
-                let b1 = self.data[self.offset + 1];
-                let b2 = self.data[self.offset + 2];
-                let b3 = self.data[self.offset + 3];
-                let b4 = self.data[self.offset + 4];
-                let str_len = u32::from_be_bytes([b1, b2, b3, b4]) as usize;
-                self.offset += 5;
-                self.offset += str_len;
-            }
-        };
-
-        Some(current_offset)
-    }
-}
-
-pub struct ZipListIterRev<'a> {
-    zip_list: &'a ZipList,
-    offset: usize,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum ZipEntry {
-    Int4BitsImmediate(u8),
-    Int8(i8),
-    Int16(i16),
-    Int24(i32),
-    Int32(i32),
-    Int64(i64),
-
-    // String encodings
-    Str6BitsLength(Box<[u8]>),  // 6-bit immediate
-    Str14BitsLength(Box<[u8]>), // 14-bit big-endian
-    Str32BitsLength(Box<[u8]>), // 32-bit big-endian
-}
-
-impl ZipEntry {
-    // this should probably be it's own thing and not from redis object
-    pub fn from_redis_object(obj: RedisObject) -> ZipEntry {
-        const INT8_MIN: i64 = i8::MIN as i64;
-        const INT8_MAX: i64 = i8::MAX as i64;
-        const INT16_MIN: i64 = i16::MIN as i64;
-        const INT16_MAX: i64 = i16::MAX as i64;
-        const INT24_MIN: i64 = -8388608;
-        const INT24_MAX: i64 = 8388607;
-        const INT32_MIN: i64 = i32::MIN as i64;
-        const INT32_MAX: i64 = i32::MAX as i64;
-
-        const U32_MAX: usize = u32::MAX as usize;
-
-        match obj {
-            RedisObject::Int(i) => match i {
-                0..=12 => {
-                    let num = i as u8 + 1;
-                    let tag = 0b1111_0000;
-                    let val = num | tag;
-                    ZipEntry::Int4BitsImmediate(val)
-                }
-                INT8_MIN..=INT8_MAX => ZipEntry::Int8(i as i8),
-                INT16_MIN..=INT16_MAX => ZipEntry::Int16(i as i16),
-                INT24_MIN..=INT24_MAX => ZipEntry::Int24(i as i32),
-                INT32_MIN..=INT32_MAX => ZipEntry::Int32(i as i32),
-                _ => ZipEntry::Int64(i),
-            },
-            RedisObject::String(s) => match s.len() {
-                0..=63 => ZipEntry::Str6BitsLength(s),
-                64..=16383 => ZipEntry::Str14BitsLength(s),
-                16384..=U32_MAX => ZipEntry::Str32BitsLength(s),
-                _ => panic!("string to long for ziplist"),
-            },
-            _ => unreachable!("Can't insert ziplist in ziplist"),
-        }
-    }
-
-    // gives the length of the zip entry in how many bytes header + payload
-    fn amount_bytes(&self) -> usize {
-        match self {
-            ZipEntry::Int4BitsImmediate(_) => 1,
-            ZipEntry::Int8(_) => 2,
-            ZipEntry::Int16(_) => 3,
-            ZipEntry::Int24(_) => 4,
-            ZipEntry::Int32(_) => 5,
-            ZipEntry::Int64(_) => 9,
-            ZipEntry::Str6BitsLength(s) => s.len() + 1,
-            ZipEntry::Str14BitsLength(s) => s.len() + 2,
-            ZipEntry::Str32BitsLength(s) => s.len() + 5,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum EncodingType {
-    Int4BitsImmediate,
-    Int8,
-    Int16,
-    Int24,
-    Int32,
-    Int64,
-    Str6BitsLength,
-    Str14BitsLength,
-    Str32BitsLength,
-}
-
-impl EncodingType {
-    fn from_header(header: u8) -> EncodingType {
-        match header {
-            INT8_TAG => EncodingType::Int8,
-            INT16_TAG => EncodingType::Int16,
-            INT24_TAG => EncodingType::Int24,
-            INT32_TAG => EncodingType::Int32,
-            INT64_TAG => EncodingType::Int64,
-            STR32_TAG => EncodingType::Str32BitsLength,
-
-            // Int4: 1111xxxx where xxxx is 0001-1101 (0xF1-0xFD)
-            0xF1..=0xFD => EncodingType::Int4BitsImmediate,
-
-            _ if (header & STR14_MASK) == STR14_TAG => EncodingType::Str14BitsLength,
-            _ if (header & STR6_MASK) == STR6_TAG => EncodingType::Str6BitsLength,
-
-            _ => panic!("invalid header"),
-        }
     }
 }
 
@@ -897,70 +743,6 @@ mod tests {
 
         for test in tests {
             let result = ZipEntry::from_redis_object(test.obj);
-            assert_eq!(test.expected, result);
-        }
-    }
-
-    #[test]
-    fn test_get_encoding_from_header() {
-        struct TestData {
-            header: u8,
-            expected: EncodingType,
-        }
-
-        let tests = vec![
-            TestData {
-                header: 0b0011_1011,
-                expected: EncodingType::Str6BitsLength,
-            },
-            TestData {
-                header: 0b0110_1111,
-                expected: EncodingType::Str14BitsLength,
-            },
-            TestData {
-                header: 0b1000_0000,
-                expected: EncodingType::Str32BitsLength,
-            },
-            TestData {
-                header: 0b1111_0001,
-                expected: EncodingType::Int4BitsImmediate,
-            },
-            TestData {
-                header: 0b1111_0010,
-                expected: EncodingType::Int4BitsImmediate,
-            },
-            TestData {
-                header: 0b1111_1101,
-                expected: EncodingType::Int4BitsImmediate,
-            },
-            TestData {
-                header: 0b1111_1110,
-                expected: EncodingType::Int8,
-            },
-            TestData {
-                header: 0b1111_1110,
-                expected: EncodingType::Int8,
-            },
-            TestData {
-                header: 0b1100_0000,
-                expected: EncodingType::Int16,
-            },
-            TestData {
-                header: 0b1111_0000,
-                expected: EncodingType::Int24,
-            },
-            TestData {
-                header: 0b1101_0000,
-                expected: EncodingType::Int32,
-            },
-            TestData {
-                header: 0b1110_0000,
-                expected: EncodingType::Int64,
-            },
-        ];
-
-        for test in tests {
-            let result = EncodingType::from_header(test.header);
             assert_eq!(test.expected, result);
         }
     }
@@ -1571,7 +1353,7 @@ mod tests {
             let mut zl = ZipList::new();
             zl.data = test.init_state;
             for index in test.deletions {
-                zl.remove(index);
+                zl.remove_at_index(index);
             }
 
             assert_eq!(&test.expected, &zl.data);

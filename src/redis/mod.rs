@@ -1,6 +1,6 @@
 pub mod hash_table;
 pub mod redis_object;
-pub mod zip_list;
+pub mod ziplist;
 
 use crate::{
     commands::RedisCommand,
@@ -8,7 +8,7 @@ use crate::{
     redis::{
         hash_table::{HashDict, HashNode},
         redis_object::RedisObject,
-        zip_list::{ZipEntry, ZipList},
+        ziplist::{ZipEntry, ZipList},
     },
 };
 

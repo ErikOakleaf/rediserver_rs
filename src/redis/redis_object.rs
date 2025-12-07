@@ -1,4 +1,4 @@
-use crate::redis::zip_list::ZipList;
+use crate::redis::ziplist::ZipList;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RedisObject {
@@ -180,8 +180,9 @@ mod tests {
             },
             TestData {
                 bytes: b"28399223372036854775808",
-                expected: RedisObject::String(b"28399223372036854775808".to_vec().into_boxed_slice()),
-
+                expected: RedisObject::String(
+                    b"28399223372036854775808".to_vec().into_boxed_slice(),
+                ),
             },
         ];
 

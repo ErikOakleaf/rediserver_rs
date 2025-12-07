@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use redis::redis::zip_list::{ZipEntry, ZipList};
+use redis::redis::ziplist::{ZipEntry, ZipList};
 use std::hint::black_box;
 
 fn bench_push(c: &mut Criterion) {
@@ -99,7 +99,7 @@ fn bench_delete(c: &mut Criterion) {
             |mut zl| {
                 // Bench
                 for _ in 0..9 {
-                    zl.remove(0);
+                    zl.remove_at_index(0);
                 }
             },
             criterion::BatchSize::PerIteration,
@@ -168,7 +168,7 @@ fn bench_get(c: &mut Criterion) {
 
                 zl
             },
-            |mut zl| {
+            |zl| {
                 // Bench
                 for i in 0..9 {
                     black_box(zl.get(i));
@@ -253,5 +253,12 @@ pub fn bench_pop(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_push, bench_insert, bench_delete, bench_get, bench_pop);
+criterion_group!(
+    benches,
+    bench_push,
+    bench_insert,
+    bench_delete,
+    bench_get,
+    bench_pop
+);
 criterion_main!(benches);
